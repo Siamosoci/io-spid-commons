@@ -47,7 +47,7 @@ type CommonExtension = t.TypeOf<typeof CommonExtension>;
 
 const AggregatorExtension = t.intersection([
   t.interface({
-    aggregatorType: t.literal(AggregatorType.PublicServicesFullOperator)
+    aggregatorType: t.literal(AggregatorType.Private)
   }),
   CommonExtension
 ]);
