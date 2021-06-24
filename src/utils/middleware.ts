@@ -34,7 +34,8 @@ export enum EntityType {
 }
 
 export enum AggregatorType {
-  PublicServicesFullOperator = "PublicServicesFullOperator"
+  PublicServicesFullOperator = "PublicServicesFullOperator",
+  Private = "Private"
 }
 
 const CommonExtension = t.interface({
