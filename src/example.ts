@@ -97,7 +97,7 @@ const serviceProviderConfig: IServiceProviderConfig = {
         FiscalCode: "12345678901",
         IPACode: "1",
         VATNumber: "12345678902",
-        aggregatorType: AggregatorType.Private
+        aggregatorType: AggregatorType.PublicServicesFullOperator
       },
       phone: "+393331234567"
     }
