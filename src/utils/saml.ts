@@ -400,10 +400,7 @@ const getSpidContactPersonMetadata = (
           const contact = {
             $: {
               contactType: item.contactType
-            },
-            Company: item.company,
-            EmailAddress: item.email,
-            ...(item.phone ? { TelephoneNumber: item.phone } : {})
+            }
           };
           if (item.contactType === ContactType.OTHER) {
             return {
@@ -419,14 +416,51 @@ const getSpidContactPersonMetadata = (
                   : {}),
                 ...(item.entityType === EntityType.AGGREGATOR
                   ? { [`spid:${item.extensions.aggregatorType}`]: {} }
+                  : {}),
+                ...(item.entityType === EntityType.AGGREGATE
+                  ? { [`spid:Private`]: {} }
                   : {})
+              },
+              Company: item.company,
+              EmailAddress: item.email,
+              ...(item.phone ? { TelephoneNumber: item.phone } : {}),
+              ...contact,
+              $: {
+                ...contact.$,
+                "spid:entityType": item.entityType === EntityType.AGGREGATOR ? item.entityType : undefined
+              }
+            };
+          } else if (item.contactType === ContactType.BILLING) {
+            const datiAnagrafici = item.extensions.cessionarioCommittente.datiAnagrafici;
+            const sede = item.extensions.cessionarioCommittente.sede;
+            return {
+              Extensions: {
+                $: { "xmlns:fpa": "https://spid.gov.it/invoicing-extensions"},
+                "fpa:CessionarioCommittente": {
+                  "fpa:DatiAnagrafici": {
+                    "fpa:IdFiscaleIVA": {
+                      "fpa:IdPaese": datiAnagrafici.idFiscaleIVA.idPaese,
+                      "fpa:IdCodice": datiAnagrafici.idFiscaleIVA.idCodice
+                    },
+                    "fpa:Anagrafica": {
+                      "fpa:Denominazione": datiAnagrafici.anagrafica.denominazione
+                    }
+                  },
+                  "fpa:Sede": {
+                    "fpa:Indirizzo": sede.indirizzo,
+                    "fpa:NumeroCivico": sede.numeroCivico,
+                    "fpa:CAP": sede.CAP,
+                    "fpa:Comune": sede.comune,
+                    "fpa:Provincia": sede.provincia,
+                    "fpa:Nazione": sede.nazione
+                  }
+                }
               },
               ...contact,
               $: {
                 ...contact.$,
-                "spid:entityType": item.entityType
               }
-            };
+            }
           }
           return contact;
         })
