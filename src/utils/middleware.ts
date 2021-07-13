@@ -106,7 +106,6 @@ const ContactPersonOther = t.intersection([
     })
   ]),
   t.partial({
-    // entityType: t.literal(EntityType.AGGREGATOR),
     phone: t.string
   })
 ]);
@@ -120,7 +119,6 @@ const ContactPersonBilling = t.intersection([
     extensions: BillingExtension
   }),
   t.partial({
-    // entityType: t.literal(EntityType.AGGREGATOR),
     phone: t.string
   })
 ]);

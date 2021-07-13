@@ -400,7 +400,10 @@ const getSpidContactPersonMetadata = (
           const contact = {
             $: {
               contactType: item.contactType
-            }
+            },
+            Company: item.company,
+            EmailAddress: item.email,
+            ...(item.phone ? { TelephoneNumber: item.phone } : {})
           };
           if (item.contactType === ContactType.OTHER) {
             return {
@@ -421,9 +424,6 @@ const getSpidContactPersonMetadata = (
                   ? { [`spid:Private`]: {} }
                   : {})
               },
-              Company: item.company,
-              EmailAddress: item.email,
-              ...(item.phone ? { TelephoneNumber: item.phone } : {}),
               ...contact,
               $: {
                 ...contact.$,
