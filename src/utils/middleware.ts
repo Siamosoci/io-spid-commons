@@ -36,7 +36,8 @@ export enum EntityType {
 }
 
 export enum AggregatorType {
-  PublicServicesFullOperator = "PublicServicesFullOperator"
+  PublicServicesFullOperator = "PublicServicesFullOperator",
+  Private = "Private"
 }
 
 const CommonExtension = t.interface({
@@ -75,7 +76,10 @@ type CessionarioCommittenteExtension = t.TypeOf<typeof CessionarioCommittenteExt
 
 const AggregatorExtension = t.intersection([
   t.interface({
-    aggregatorType: t.literal(AggregatorType.PublicServicesFullOperator)
+    aggregatorType: t.union([
+      t.literal(AggregatorType.Private),
+      t.literal(AggregatorType.PublicServicesFullOperator)
+    ])
   }),
   CommonExtension
 ]);
