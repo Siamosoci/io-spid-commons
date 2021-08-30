@@ -434,8 +434,7 @@ const getSpidContactPersonMetadata = (
             const datiAnagrafici = item.extensions.cessionarioCommittente.datiAnagrafici;
             const sede = item.extensions.cessionarioCommittente.sede;
             return {
-              Extensions: {
-                $: { "xmlns:fpa": "https://spid.gov.it/invoicing-extensions"},
+              "Extensions": {
                 "fpa:CessionarioCommittente": {
                   "fpa:DatiAnagrafici": {
                     "fpa:IdFiscaleIVA": {
@@ -454,7 +453,10 @@ const getSpidContactPersonMetadata = (
                     "fpa:Provincia": sede.provincia,
                     "fpa:Nazione": sede.nazione
                   }
-                }
+                },
+                $: {
+                  "xmlns:fpa": "https://spid.gov.it/invoicing-extensions"
+                },
               },
               ...contact,
               $: {
