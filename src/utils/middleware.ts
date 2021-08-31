@@ -32,7 +32,7 @@ export enum ContactType {
 
 export enum EntityType {
   AGGREGATOR = "spid:aggregator",
-  AGGREGATE = "spid:aggregated"
+  AGGREGATED = "spid:aggregated"
 }
 
 export enum AggregatorType {
@@ -105,7 +105,7 @@ const ContactPersonOther = t.intersection([
       extensions: AggregatorExtension
     }),
     t.interface({
-      entityType: t.literal(EntityType.AGGREGATE),
+      entityType: t.literal(EntityType.AGGREGATED),
       extensions: PrivateSPExtension
     })
   ]),

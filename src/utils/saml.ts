@@ -431,7 +431,7 @@ const getSpidContactPersonMetadata = (
                 ...(item.entityType === EntityType.AGGREGATOR
                   ? { [`spid:${item.extensions.aggregatorType}`]: {} }
                   : {}),
-                ...(item.entityType === EntityType.AGGREGATE
+                ...(item.entityType === EntityType.AGGREGATED
                   ? { [`spid:Private`]: {} }
                   : {})
               },
