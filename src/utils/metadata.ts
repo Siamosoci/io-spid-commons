@@ -196,14 +196,20 @@ export function fetchIdpsMetadata(
 export function parseStartupIdpsMetadata(
   idpsMetadata: Record<string, string>
 ): Record<string, IDPEntityDescriptor> {
+  const idps: { [key: string]: string } = { ...SPID_IDP_IDENTIFIERS, ...CIE_IDP_IDENTIFIERS }; // TODO: Add TestEnv IDP identifier
+  // const metadatas = ;
   return mapIpdMetadata(
-    new StrMap(idpsMetadata).reduce(
+    new StrMap(idpsMetadata).reduceWithKey(
       [] as ReadonlyArray<IDPEntityDescriptor>,
-      (prev, metadataXML) => [
-        ...prev,
-        ...parseIdpMetadata(metadataXML).getOrElse([])
-      ]
+      (key, prev, metadataXML) => {
+        const newIdps = parseIdpMetadata(metadataXML).getOrElse([]);
+        newIdps.forEach(idp => idps[idp.entityID] = key)
+        return [
+          ...prev,
+          ...newIdps
+        ]
+      }
     ),
-    { ...SPID_IDP_IDENTIFIERS, ...CIE_IDP_IDENTIFIERS } // TODO: Add TestEnv IDP identifier
+    idps
   );
 }
