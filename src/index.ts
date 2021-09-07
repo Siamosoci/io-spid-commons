@@ -5,6 +5,7 @@
  * Setups the endpoint to generate service provider metadata
  * and a scheduled process to refresh IDP metadata from providers.
  */
+import { randomBytes } from "crypto";
 import * as express from "express";
 import { constVoid } from "fp-ts/lib/function";
 import { fromNullable, fromPredicate } from "fp-ts/lib/Option";
@@ -248,6 +249,12 @@ export function withSpid({
       // Setup SPID login handler
       app.get(
         appConfig.loginPath,
+        function(req, res, next){
+            // you could redirect to /login?RelayState=whatever, or set query here,
+            // the value must be encoded for passing in the query string:
+            req.query.RelayState = encodeURIComponent(randomBytes(16).toString('base64'));
+            next();
+        },
         middlewareCatchAsInternalError((req, res, next) => {
           fromNullable(req.query)
             .mapNullable(q => q.authLevel)
