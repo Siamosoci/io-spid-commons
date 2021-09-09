@@ -631,13 +631,13 @@ const validateIssuer = (
       )
     )
   ).chain(Issuers => // Issuer must be a direct child of fatherElement
-      fromOption(new Error("Issuer element must be present"))(
-        fromNullable(
-          Issuers.find(Issuer =>
-            Issuer.parentNode === fatherElement
-          )
+    fromOption(new Error("Issuer element must be present"))(
+      fromNullable(
+        Issuers.find(Issuer =>
+          Issuer.parentNode === fatherElement
         )
       )
+    )
   ).chain(Issuer =>
     NonEmptyString.decode(Issuer.textContent?.trim())
       .mapLeft(() => new Error("Issuer element must be not empty"))
