@@ -55,6 +55,7 @@ import {
   ISpidStrategyOptions,
   StrictResponseValidationOptions
 } from "./middleware";
+import { fromArray } from "fp-ts/lib/NonEmptyArray2v";
 
 export type SamlAttributeT = keyof typeof SPID_USER_ATTRIBUTES;
 
@@ -623,18 +624,27 @@ const validateIssuer = (
   idpIssuer: string
 ): Either<Error, Element> =>
   fromOption(new Error("Issuer element must be present"))(
-    fromNullable(
-      fatherElement
-        .getElementsByTagNameNS(SAML_NAMESPACE.ASSERTION, "Issuer")
-        .item(0)
+    fromArray(
+      Array.from(
+        fatherElement
+          .getElementsByTagNameNS(SAML_NAMESPACE.ASSERTION, "Issuer")
+      )
+        // .item(0)
     )
-  ).chain( // Issuer must be a direct child of fatherElement
-    fromPredicate(
-      Issuer => {
-        return Issuer.parentNode === fatherElement;
-      },
-      () => new Error(`Issuer element must be present`)
-    )
+  ).chain(Issuers => // Issuer must be a direct child of fatherElement
+      fromOption(new Error("Issuer element must be present"))(
+        fromNullable(
+          Issuers.find(Issuer =>
+            Issuer.parentNode === fatherElement
+          )
+        )
+      )
+    // fromPredicate(
+    //   Issuer => {
+    //     return Issuer.parentNode === fatherElement;
+    //   },
+    //   () => new Error(`Issuer element must be present`)
+    // )
   ).chain(Issuer =>
     NonEmptyString.decode(Issuer.textContent?.trim())
       .mapLeft(() => new Error("Issuer element must be not empty"))
