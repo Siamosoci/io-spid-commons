@@ -629,7 +629,6 @@ const validateIssuer = (
         fatherElement
           .getElementsByTagNameNS(SAML_NAMESPACE.ASSERTION, "Issuer")
       )
-        // .item(0)
     )
   ).chain(Issuers => // Issuer must be a direct child of fatherElement
       fromOption(new Error("Issuer element must be present"))(
@@ -639,12 +638,6 @@ const validateIssuer = (
           )
         )
       )
-    // fromPredicate(
-    //   Issuer => {
-    //     return Issuer.parentNode === fatherElement;
-    //   },
-    //   () => new Error(`Issuer element must be present`)
-    // )
   ).chain(Issuer =>
     NonEmptyString.decode(Issuer.textContent?.trim())
       .mapLeft(() => new Error("Issuer element must be not empty"))
