@@ -442,14 +442,50 @@ const getSpidContactPersonMetadata = (
                   : {}),
                 ...(item.entityType === EntityType.AGGREGATOR
                   ? { [`spid:${item.extensions.aggregatorType}`]: {} }
+                  : {}),
+                ...(item.entityType === EntityType.AGGREGATED
+                  ? { [`spid:Private`]: {} }
                   : {})
               },
               ...contact,
               $: {
                 ...contact.$,
-                "spid:entityType": item.entityType
+                "spid:entityType": item.entityType === EntityType.AGGREGATOR ? item.entityType : undefined
               }
             };
+          } else if (item.contactType === ContactType.BILLING) {
+            const datiAnagrafici = item.extensions.cessionarioCommittente.datiAnagrafici;
+            const sede = item.extensions.cessionarioCommittente.sede;
+            return {
+              "Extensions": {
+                "fpa:CessionarioCommittente": {
+                  "fpa:DatiAnagrafici": {
+                    "fpa:IdFiscaleIVA": {
+                      "fpa:IdPaese": datiAnagrafici.idFiscaleIVA.idPaese,
+                      "fpa:IdCodice": datiAnagrafici.idFiscaleIVA.idCodice
+                    },
+                    "fpa:Anagrafica": {
+                      "fpa:Denominazione": datiAnagrafici.anagrafica.denominazione
+                    }
+                  },
+                  "fpa:Sede": {
+                    "fpa:Indirizzo": sede.indirizzo,
+                    "fpa:NumeroCivico": sede.numeroCivico,
+                    "fpa:CAP": sede.CAP,
+                    "fpa:Comune": sede.comune,
+                    "fpa:Provincia": sede.provincia,
+                    "fpa:Nazione": sede.nazione
+                  }
+                },
+                $: {
+                  "xmlns:fpa": "https://spid.gov.it/invoicing-extensions"
+                },
+              },
+              ...contact,
+              $: {
+                ...contact.$,
+              }
+            }
           }
           return contact;
         })
