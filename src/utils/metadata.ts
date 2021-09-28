@@ -208,34 +208,21 @@ export function fetchIdpsMetadata(
 export function parseStartupIdpsMetadata(
   idpsMetadata: Record<string, string>
 ): Record<string, IDPEntityDescriptor> {
-  // const idps: { [key: string]: string } = { ...SPID_IDP_IDENTIFIERS, ...CIE_IDP_IDENTIFIERS }; // TODO: Add TestEnv IDP identifier
-  // // const metadatas = ;
-  // return mapIpdMetadata(
-  //   new StrMap(idpsMetadata).reduceWithKey(
-  //     [] as ReadonlyArray<IDPEntityDescriptor>,
-  //     (key, prev, metadataXML) => {
-  //       const newIdps = parseIdpMetadata(metadataXML).getOrElse([]);
-  //       newIdps.forEach(idp => idps[idp.entityID] = key)
-  //       return [
-  //         ...prev,
-  //         ...newIdps
-  //       ]
-  //     }
-  //   ),
-  //   idps
+  const idps: { [key: string]: string } = { ...SPID_IDP_IDENTIFIERS, ...CIE_IDP_IDENTIFIERS };
 
   return pipe(
     idpsMetadata,
-    R.reduce(Ord)(
+    R.reduceWithIndex(Ord)(
       [] as ReadonlyArray<IDPEntityDescriptor>,
-      (prev, metadataXML) => [
+      (key, prev, metadataXML) => [
         ...prev,
         ...pipe(
           parseIdpMetadata(metadataXML),
-          E.getOrElseW(() => [])
+          E.getOrElseW(() => []),
+          newIdps => { newIdps.forEach(idp => idps[idp.entityID] = key); return newIdps }
         )
       ]
     ),
-    mapIpdMetadataL({ ...SPID_IDP_IDENTIFIERS, ...CIE_IDP_IDENTIFIERS })
+    mapIpdMetadataL(idps)
   );
 }
