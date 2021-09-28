@@ -18,6 +18,7 @@ import * as O from "fp-ts/lib/Option";
 import { collect, lookup } from "fp-ts/lib/Record";
 import { Ord } from "fp-ts/lib/string";
 import * as TE from "fp-ts/lib/TaskEither";
+import { fromArray } from "fp-ts/lib/NonEmptyArray";
 import * as t from "io-ts";
 import { pki } from "node-forge";
 import { SamlConfig } from "passport-saml";
@@ -55,6 +56,7 @@ export const SAML_NAMESPACE = {
 export const ISSUER_FORMAT = "urn:oasis:names:tc:SAML:2.0:nameid-format:entity";
 
 const decodeBase64 = (s: string) => Buffer.from(s, "base64").toString("utf8");
+const encodeBase64 = (s: string) => Buffer.from(s, 'binary').toString('base64');
 
 /**
  * Remove prefix and suffix from x509 certificate.
@@ -95,7 +97,11 @@ export const notSignedWithHmacPredicate = E.fromPredicate(
 export const getXmlFromSamlResponse = (body: unknown): O.Option<Document> =>
   pipe(
     O.fromEither(SAMLResponse.decode(body)),
-    O.map(_ => decodeBase64(_.SAMLResponse)),
+    O.map(_ => {
+      const decoded = decodeBase64(_.SAMLResponse).replace(/\r/g, '');
+      _.SAMLResponse = encodeBase64(decoded);
+      return decoded;
+    }),
     O.chain(_ => O.tryCatch(() => new DOMParser().parseFromString(_)))
   );
 
@@ -645,10 +651,20 @@ export const validateIssuer = (
 ): E.Either<Error, Element> =>
   pipe(
     E.fromOption(() => new Error("Issuer element must be present"))(
-      O.fromNullable(
-        fatherElement
-          .getElementsByTagNameNS(SAML_NAMESPACE.ASSERTION, "Issuer")
-          .item(0)
+      fromArray(
+        Array.from(
+          fatherElement
+            .getElementsByTagNameNS(SAML_NAMESPACE.ASSERTION, "Issuer")
+        )
+      )
+    ),
+    E.chain(Issuers => // Issuer must be a direct child of fatherElement
+      E.fromOption(() => new Error("Issuer element must be present"))(
+        O.fromNullable(
+          Issuers.find(Issuer =>
+            Issuer.parentNode === fatherElement
+          )
+        )
       )
     ),
     E.chain(Issuer =>
