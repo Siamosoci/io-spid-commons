@@ -267,7 +267,7 @@ export function withSpid({
         function(req, res, next){
             // you could redirect to /login?RelayState=whatever, or set query here,
             // the value must be encoded for passing in the query string:
-            req.query.RelayState = encodeURIComponent(randomBytes(16).toString('base64'));
+            req.query.RelayState = encodeURIComponent(Buffer.from(JSON.stringify({ entityID: req.query.entityID, rnd: randomBytes(16).toString('base64')})).toString('base64'));
             next();
         },
         middlewareCatchAsInternalError((req, res, next) => {

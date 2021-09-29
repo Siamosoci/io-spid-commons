@@ -32,7 +32,7 @@ export class CustomSamlClient extends PassportSaml.SAML {
    * the response XML to satisfy SPID protocol constrains
    */
   public validatePostResponse(
-    body: { SAMLResponse: string },
+    body: { SAMLResponse: string, RelayState: string },
     // tslint:disable-next-line: bool-param-default
     callback: (err: Error, profile?: unknown, loggedOut?: boolean) => void
   ): void {
@@ -48,7 +48,15 @@ export class CustomSamlClient extends PassportSaml.SAML {
           }
           // go on with checks in case no error is found
           return super.validatePostResponse(body, (error, __, ___) => {
-            if (!error && isValid && AuthnRequestID) {
+            const relayState: { entityID: string, rnd: string } = (() => {
+              try {
+                return JSON.parse(Buffer.from(decodeURIComponent(body.RelayState), "base64").toString("utf8"));
+              } catch {
+                return {};
+              }
+            })();
+            
+            if (!error && isValid && AuthnRequestID && !relayState.entityID?.startsWith('xx_')) {
               // tslint:disable-next-line: no-floating-promises
               pipe(
                 this.extededCacheProvider.remove(AuthnRequestID),
