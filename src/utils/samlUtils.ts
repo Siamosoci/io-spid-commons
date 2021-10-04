@@ -242,7 +242,7 @@ const getAuthSalmOptions = (
         lookup(authLevel, SPID_LEVELS),
         O.map(authnContext => ({
           authnContext,
-          forceAuthn: authLevel !== "SpidL1"
+          forceAuthn: true // authLevel !== "SpidL1"
         })),
         O.altW(() => {
           logger.error(
@@ -264,7 +264,7 @@ const getAuthSalmOptions = (
             O.map(authLevel => {
               return {
                 authnContext,
-                forceAuthn: authLevel !== "SpidL1"
+                forceAuthn: true // authLevel !== "SpidL1"
               };
             }),
             O.altW(() => {
