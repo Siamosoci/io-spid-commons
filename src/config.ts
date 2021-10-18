@@ -35,7 +35,13 @@ export const SPID_USER_ATTRIBUTES = {
   name: "Nome",
   placeOfBirth: "Luogo di nascita",
   registeredOffice: "Ufficio",
-  spidCode: "Codice SPID"
+  spidCode: "Codice SPID",
+  domicileStreetAddress: "Domicilio",
+  domicilePostalCode: "Codice Postale",
+  domicileMunicipality: "Comune",
+  domicileProvince: "Provincia",
+  domicileNation: "Nazione",
+  // expirationDate: "Data di scadenza identità"
 };
 
 export const SPID_LEVELS = {
