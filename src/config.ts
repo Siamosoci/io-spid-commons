@@ -29,7 +29,7 @@ export const SPID_USER_ATTRIBUTES = {
   familyName: "Cognome",
   fiscalNumber: "Codice fiscale",
   gender: "Sesso",
-  idCard: "Numero documento",
+  idCard: "Documento di identita'",
   ivaCode: "Codice IVA",
   mobilePhone: "Numero di telefono",
   name: "Nome",
