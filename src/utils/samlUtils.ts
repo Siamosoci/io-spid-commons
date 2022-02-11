@@ -56,7 +56,7 @@ export const SAML_NAMESPACE = {
 export const ISSUER_FORMAT = "urn:oasis:names:tc:SAML:2.0:nameid-format:entity";
 
 const decodeBase64 = (s: string) => Buffer.from(s, "base64").toString("utf8");
-const encodeBase64 = (s: string) => Buffer.from(s, 'binary').toString('base64');
+const encodeBase64 = (s: string) => Buffer.from(s, 'utf8').toString('base64');
 
 /**
  * Remove prefix and suffix from x509 certificate.
@@ -98,7 +98,7 @@ export const getXmlFromSamlResponse = (body: unknown): O.Option<Document> =>
   pipe(
     O.fromEither(SAMLResponse.decode(body)),
     O.map(_ => {
-      const decoded = decodeBase64(_.SAMLResponse).replace(/\r/g, '');
+      const decoded = decodeBase64(_.SAMLResponse).replace(/\r?\n/g, '\n');
       _.SAMLResponse = encodeBase64(decoded);
       return decoded;
     }),
