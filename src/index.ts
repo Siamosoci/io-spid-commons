@@ -52,7 +52,8 @@ import { getMetadataTamperer } from "./utils/saml";
 
 // assertion consumer service express handler
 export type AssertionConsumerServiceT = (
-  userPayload: unknown
+  userPayload: unknown,
+  relayState: string | null
 ) => Promise<
   // tslint:disable-next-line: max-union-size
   | IResponseErrorInternal
@@ -148,7 +149,11 @@ const withSpidAuthMiddleware = (
         );
         return res.redirect(clientLoginRedirectionUrl);
       }
-      const response = await acs(user);
+      const relayState = req.body.RelayState
+        ? decodeURIComponent(Buffer.from(req.body.RelayState, "base64").toString("utf8"))
+        : null;
+      
+      const response = await acs(user, relayState);
       response.apply(res);
     })(req, res, next);
   };
@@ -265,10 +270,16 @@ export function withSpid({
       app.get(
         appConfig.loginPath,
         function(req, res, next){
-            // you could redirect to /login?RelayState=whatever, or set query here,
-            // the value must be encoded for passing in the query string:
-            req.query.RelayState = encodeURIComponent(Buffer.from(JSON.stringify({ entityID: req.query.entityID, rnd: randomBytes(16).toString('base64')})).toString('base64'));
-            next();
+          // you could redirect to /login?RelayState=whatever, or set query here,
+          const relayStateObj = {
+            entityID: req.query.entityID,
+            rnd: randomBytes(16).toString('base64'),
+            redirect_url: req.query.redirect_url
+          };
+
+          // do not encode. it will be encoded later in redirect
+          req.query.RelayState = /*encodeURIComponent*/(Buffer.from(JSON.stringify(relayStateObj)).toString('base64'));
+          next();
         },
         middlewareCatchAsInternalError((req, res, next) => {
           pipe(
