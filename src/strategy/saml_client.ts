@@ -10,6 +10,7 @@ import {
   PreValidateResponseT,
   XmlTamperer
 } from "./spid";
+import { getRelayStateFromSamlResponse } from "../utils/saml";
 
 export class CustomSamlClient extends PassportSaml.SAML {
   constructor(
@@ -48,15 +49,24 @@ export class CustomSamlClient extends PassportSaml.SAML {
           }
           // go on with checks in case no error is found
           return super.validatePostResponse(body, (error, __, ___) => {
-            const relayState: { entityID: string, rnd: string } = (() => {
-              try {
-                return JSON.parse(Buffer.from(decodeURIComponent(body.RelayState), "base64").toString("utf8"));
-              } catch {
-                return {};
-              }
-            })();
+            const maybeRelayState = getRelayStateFromSamlResponse(body);
+
+            const entityID =
+              pipe(
+                maybeRelayState,
+                O.chainNullableK(r => r.entityID),
+                O.getOrElse(() => "")
+              );
             
-            if (!error && isValid && AuthnRequestID && !relayState.entityID?.startsWith('xx_')) {
+            //   { entityID: string, rnd: string; } = (() => {
+            //   try {
+            //     return JSON.parse(Buffer.from(decodeURIComponent(body.RelayState), "base64").toString("utf8"));
+            //   } catch {
+            //     return {};
+            //   }
+            // })();
+            
+            if (!error && isValid && AuthnRequestID && !entityID.startsWith('xx_')) {
               // tslint:disable-next-line: no-floating-promises
               pipe(
                 this.extededCacheProvider.remove(AuthnRequestID),
