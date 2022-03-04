@@ -46,14 +46,17 @@ import {
   getPreValidateResponse,
   getSamlIssuer,
   getSamlOptions,
-  getXmlFromSamlResponse
+  getXmlFromSamlResponse,
+  getRelayStateFromSamlResponse,
 } from "./utils/saml";
 import { getMetadataTamperer } from "./utils/saml";
+import { isIAcsUser, IAcsUser } from "./utils/user";
+import { IRelayState } from "./utils/samlUtils";
 
 // assertion consumer service express handler
 export type AssertionConsumerServiceT = (
-  userPayload: unknown,
-  relayState: string | null
+  userPayload: IAcsUser,
+  relayState: Partial<IRelayState>
 ) => Promise<
   // tslint:disable-next-line: max-union-size
   | IResponseErrorInternal
@@ -125,15 +128,27 @@ const withSpidAuthMiddleware = (
         O.chain(getSamlIssuer),
         O.getOrElse(() => "UNKNOWN")
       );
+
+      const maybeRelayState = getRelayStateFromSamlResponse(req.body);
+
+      const getClientErrorRedirectionUrl = (defaultUrl: string) =>
+        pipe(
+          maybeRelayState,
+          O.chainNullableK(r => r.redirect_url),
+          O.getOrElse(() => defaultUrl)
+        );
+        
       if (err) {
+        const [redirectPath, ...redirectQuery] = getClientErrorRedirectionUrl(clientErrorRedirectionUrl).split('?');
         const redirectionUrl =
-          clientErrorRedirectionUrl +
-          pipe(
-            maybeDoc,
-            O.chain(getErrorCodeFromResponse),
-            O.map(errorCode => `?errorCode=${errorCode}`),
-            O.getOrElse(() => `?errorMessage=${err}`)
-          );
+          redirectPath
+            + (redirectQuery?.length ? `?${redirectQuery.join('?')}&` : '?')
+            + pipe(
+              maybeDoc,
+              O.chain(getErrorCodeFromResponse),
+              O.map(errorCode => `errorCode=${errorCode}`),
+              O.getOrElse(() => `errorMessage=${err}`)
+            );
         logger.error(
           "Spid Authentication|Authentication Error|ERROR=%s|ISSUER=%s|REDIRECT_TO=%s",
           err,
@@ -142,18 +157,22 @@ const withSpidAuthMiddleware = (
         );
         return res.redirect(redirectionUrl);
       }
-      if (!user) {
+      if (!isIAcsUser(user)) {
+        const [redirectPath, ...redirectQuery] = getClientErrorRedirectionUrl(clientErrorRedirectionUrl).split('?');
+        const redirectionUrl =
+          redirectPath
+          + (redirectQuery?.length ? `?${redirectQuery.join('?')}&` : '?')
+          + 'errorMessage=invalidAcsUser';
+        
         logger.error(
           "Spid Authentication|Authentication Error|ERROR=user_not_found|ISSUER=%s",
           issuer
         );
-        return res.redirect(clientLoginRedirectionUrl);
-      }
-      const relayState = req.body.RelayState
-        ? decodeURIComponent(Buffer.from(req.body.RelayState, "base64").toString("utf8"))
-        : null;
+        // return res.redirect(getClientErrorRedirectionUrl(clientLoginRedirectionUrl));
+          return res.redirect(redirectionUrl);
+        }
       
-      const response = await acs(user, relayState);
+      const response = await acs(user, pipe(maybeRelayState, O.getOrElse(() => ({}))));
       response.apply(res);
     })(req, res, next);
   };
@@ -271,14 +290,16 @@ export function withSpid({
         appConfig.loginPath,
         function(req, res, next){
           // you could redirect to /login?RelayState=whatever, or set query here,
-          const relayStateObj = {
-            entityID: req.query.entityID,
+          const relayStateObj: IRelayState = {
+            entityID: typeof req.query.entityID === 'string' ? req.query.entityID : undefined,
             rnd: randomBytes(16).toString('base64'),
-            redirect_url: req.query.redirect_url
+            redirect_url: typeof req.query.redirect_url === 'string' ? req.query.redirect_url : undefined
           };
 
           // do not encode. it will be encoded later in redirect
-          req.query.RelayState = /*encodeURIComponent*/(Buffer.from(JSON.stringify(relayStateObj)).toString('base64'));
+          req.query.RelayState = pipe(relayStateObj, JSON.stringify, Buffer.from, b => b.toString('base64')/*, encodeURIComponent*/);
+          
+          /*encodeURIComponent*/(Buffer.from(JSON.stringify(relayStateObj)).toString('base64'));
           next();
         },
         middlewareCatchAsInternalError((req, res, next) => {

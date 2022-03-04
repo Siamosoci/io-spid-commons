@@ -46,6 +46,12 @@ interface IEntrypointCerts {
   idpIssuer?: string;
 }
 
+export interface IRelayState {
+  entityID?: string;
+  redirect_url?: string;
+  rnd: string;
+}
+
 export const SAML_NAMESPACE = {
   ASSERTION: "urn:oasis:names:tc:SAML:2.0:assertion",
   PROTOCOL: "urn:oasis:names:tc:SAML:2.0:protocol",
@@ -68,7 +74,8 @@ const cleanCert = (cert: string) =>
     .replace(/\r\n/g, "\n");
 
 const SAMLResponse = t.type({
-  SAMLResponse: t.string
+  SAMLResponse: t.string,
+  RelayState: t.string
 });
 
 /**
@@ -103,6 +110,15 @@ export const getXmlFromSamlResponse = (body: unknown): O.Option<Document> =>
       return decoded;
     }),
     O.chain(_ => O.tryCatch(() => new DOMParser().parseFromString(_)))
+  );
+
+export const getRelayStateFromSamlResponse = (body: unknown): O.Option<IRelayState> =>
+  pipe(
+    O.fromEither(SAMLResponse.decode(body)),
+    O.map(_ => _.RelayState),
+    O.map(_ => Buffer.from(_, "base64")),
+    O.map(_ => _.toString("utf8")),
+    O.chain(_ => O.tryCatch(() => JSON.parse(_)))
   );
 
 /**
