@@ -1,14 +1,17 @@
 {
-  "name": "@pagopa/io-spid-commons",
+  "name": "@mamacrowd/io-spid-commons",
   "version": "7.0.1",
   "description": "Common code for integrating SPID authentication",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/pagopa/io-spid-commons.git"
+    "url": "git@github.com:mamacrowd/io-spid-commons.git"
   },
   "bin": {
     "startup-idps-metadata": "dist/bin/startup-idps-metadata.js"
   },
+  "files": [
+      "./dist"
+  ],
   "author": "https://pagopa.gov.it",
   "license": "MIT",
   "main": "dist/index.js",
@@ -91,9 +94,5 @@
   "homepage": "https://github.com/pagopa/io-spid-commons#readme",
   "keywords": [
     "spid"
-  ],
-  "publishConfig": {
-    "registry": "https://registry.npmjs.org/",
-    "access": "public"
-  }
+  ]
 }
