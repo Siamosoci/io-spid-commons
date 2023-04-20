@@ -1,7 +1,6 @@
 /**
  * SPID Passport strategy
  */
-// tslint:disable-next-line: no-submodule-imports
 import { EmailString, NonEmptyString } from "@pagopa/ts-commons/lib/strings";
 import * as express from "express";
 import * as A from "fp-ts/lib/Array";
@@ -16,6 +15,7 @@ import { CIE_IDP_IDENTIFIERS, SPID_IDP_IDENTIFIERS } from "../config";
 import {
   PreValidateResponseT,
   SpidStrategy,
+  XmlAuthorizeTamperer,
   XmlTamperer
 } from "../strategy/spid";
 import { IDPEntityDescriptor } from "../types/IDPEntityDescriptor";
@@ -23,9 +23,9 @@ import { fetchIdpsMetadata } from "./metadata";
 import { logSamlCertExpiration, SamlAttributeT } from "./saml";
 
 interface IServiceProviderOrganization {
-  URL: string;
-  displayName: string;
-  name: string;
+  readonly URL: string;
+  readonly displayName: string;
+  readonly name: string;
 }
 
 export enum ContactType {
@@ -69,18 +69,19 @@ const ContactPerson = t.intersection([
 ]);
 type ContactPerson = t.TypeOf<typeof ContactPerson>;
 export interface IServiceProviderConfig {
-  requiredAttributes: {
-    attributes: ReadonlyArray<SamlAttributeT>;
-    name: string;
+  readonly requiredAttributes: {
+    readonly attributes: ReadonlyArray<SamlAttributeT>;
+    readonly name: string;
   };
-  spidCieUrl?: string;
-  spidTestEnvUrl?: string;
-  spidValidatorUrl?: string;
-  IDPMetadataUrl: string;
-  organization: IServiceProviderOrganization;
-  contacts?: ReadonlyArray<ContactPerson>;
-  publicCert: string;
-  strictResponseValidation?: StrictResponseValidationOptions;
+  readonly spidCieUrl?: string;
+  readonly spidCieTestUrl?: string;
+  readonly spidTestEnvUrl?: string;
+  readonly spidValidatorUrl?: string;
+  readonly IDPMetadataUrl: string;
+  readonly organization: IServiceProviderOrganization;
+  readonly contacts?: ReadonlyArray<ContactPerson>;
+  readonly publicCert: string;
+  readonly strictResponseValidation?: StrictResponseValidationOptions;
 }
 
 export type StrictResponseValidationOptions = Record<
@@ -89,18 +90,17 @@ export type StrictResponseValidationOptions = Record<
 >;
 
 export interface ISpidStrategyOptions {
-  idp: { [key: string]: IDPEntityDescriptor | undefined };
-  // tslint:disable-next-line: no-any
-  sp: SamlConfig & {
-    attributes: {
-      attributes: {
-        attributes: ReadonlyArray<SamlAttributeT>;
-        name: string;
+  readonly idp: { readonly [key: string]: IDPEntityDescriptor | undefined };
+  readonly sp: SamlConfig & {
+    readonly attributes: {
+      readonly attributes: {
+        readonly attributes: ReadonlyArray<SamlAttributeT>;
+        readonly name: string;
       };
-      name: string;
+      readonly name: string;
     };
   } & {
-    organization: IServiceProviderOrganization;
+    readonly organization: IServiceProviderOrganization;
   };
 }
 
@@ -109,25 +109,23 @@ export interface ISpidStrategyOptions {
  * extending the provided SamlOption with the service provider configuration
  * and the idps Options
  */
-export function makeSpidStrategyOptions(
+export const makeSpidStrategyOptions = (
   samlConfig: SamlConfig,
   serviceProviderConfig: IServiceProviderConfig,
   idpOptionsRecord: Record<string, IDPEntityDescriptor>
-): ISpidStrategyOptions {
-  return {
-    idp: idpOptionsRecord,
-    sp: {
-      ...samlConfig,
-      attributes: {
-        attributes: serviceProviderConfig.requiredAttributes,
-        name: serviceProviderConfig.requiredAttributes.name
-      },
-      identifierFormat: "urn:oasis:names:tc:SAML:2.0:nameid-format:transient",
-      organization: serviceProviderConfig.organization,
-      signatureAlgorithm: "sha256"
-    }
-  };
-}
+): ISpidStrategyOptions => ({
+  idp: idpOptionsRecord,
+  sp: {
+    ...samlConfig,
+    attributes: {
+      attributes: serviceProviderConfig.requiredAttributes,
+      name: serviceProviderConfig.requiredAttributes.name
+    },
+    identifierFormat: "urn:oasis:names:tc:SAML:2.0:nameid-format:transient",
+    organization: serviceProviderConfig.organization,
+    signatureAlgorithm: "sha256"
+  }
+});
 
 /**
  * Merge strategy configuration with metadata from IDP.
@@ -138,7 +136,7 @@ export function makeSpidStrategyOptions(
 export const getSpidStrategyOptionsUpdater = (
   samlConfig: SamlConfig,
   serviceProviderConfig: IServiceProviderConfig
-): (() => T.Task<ISpidStrategyOptions>) => () => {
+) => (): T.Task<ISpidStrategyOptions> => {
   const idpOptionsTasks = [
     pipe(
       fetchIdpsMetadata(
@@ -180,6 +178,19 @@ export const getSpidStrategyOptionsUpdater = (
         : []
     )
     .concat(
+      NonEmptyString.is(serviceProviderConfig.spidCieTestUrl)
+        ? [
+            pipe(
+              fetchIdpsMetadata(
+                serviceProviderConfig.spidCieTestUrl,
+                CIE_IDP_IDENTIFIERS
+              ),
+              TE.getOrElseW(() => T.of({}))
+            )
+          ]
+        : []
+    )
+    .concat(
       NonEmptyString.is(serviceProviderConfig.spidTestEnvUrl)
         ? [
             pipe(
@@ -196,7 +207,7 @@ export const getSpidStrategyOptionsUpdater = (
     );
   return pipe(
     A.sequence(T.ApplicativePar)(idpOptionsTasks),
-    // tslint:disable-next-line: no-inferred-empty-object-type
+
     T.map(A.reduce({}, (prev, current) => ({ ...prev, ...current }))),
     T.map(idpOptionsRecord => {
       logSamlCertExpiration(serviceProviderConfig.publicCert);
@@ -218,9 +229,7 @@ const SPID_STRATEGY_OPTIONS_KEY = "spidStrategyOptions";
  */
 export const getSpidStrategyOption = (
   app: express.Application
-): ISpidStrategyOptions | undefined => {
-  return app.get(SPID_STRATEGY_OPTIONS_KEY);
-};
+): ISpidStrategyOptions | undefined => app.get(SPID_STRATEGY_OPTIONS_KEY);
 
 /**
  * This method is called to set or update Spid Strategy Options.
@@ -230,7 +239,7 @@ export const getSpidStrategyOption = (
 export const upsertSpidStrategyOption = (
   app: express.Application,
   newSpidStrategyOpts: ISpidStrategyOptions
-) => {
+): void => {
   const spidStrategyOptions = getSpidStrategyOption(app);
   app.set(
     SPID_STRATEGY_OPTIONS_KEY,
@@ -249,17 +258,18 @@ export const upsertSpidStrategyOption = (
 /**
  * SPID strategy factory function.
  */
-export function makeSpidStrategy(
+export const makeSpidStrategy = (
   options: ISpidStrategyOptions,
   getSamlOptions: SpidStrategy["getSamlOptions"],
   redisClient: RedisClient,
-  tamperAuthorizeRequest?: XmlTamperer,
+  tamperAuthorizeRequest?: XmlAuthorizeTamperer,
   tamperMetadata?: XmlTamperer,
   preValidateResponse?: PreValidateResponseT,
   doneCb?: DoneCallbackT
-): SpidStrategy {
-  return new SpidStrategy(
-    { ...options, passReqToCallback: true },
+  // eslint-disable-next-line max-params
+): SpidStrategy =>
+  new SpidStrategy(
+    { ...options.sp, passReqToCallback: true },
     getSamlOptions,
     (_: express.Request, profile: Profile, done: VerifiedCallback) => {
       // at this point SAML authentication is successful
@@ -272,4 +282,3 @@ export function makeSpidStrategy(
     preValidateResponse,
     doneCb
   );
-}

@@ -1,5 +1,4 @@
 import { isLeft, isRight, left } from "fp-ts/lib/Either";
-// tslint:disable-next-line: no-submodule-imports
 import * as nock from "nock";
 import { CIE_IDP_IDENTIFIERS, SPID_IDP_IDENTIFIERS } from "../../config";
 import cieIdpMetadata from "../__mocks__/cie-idp-metadata";
@@ -82,10 +81,11 @@ describe("fetchIdpsMetadata", () => {
       expect(result.right).toHaveProperty("xx_servizicie_test", {
         cert: expect.any(Array),
         entityID:
-          "https://idserver.servizicie.interno.gov.it:8443/idp/profile/SAML2/POST/SSO",
+          "https://preproduzione.idserver.servizicie.interno.gov.it/idp/profile/SAML2/POST/SSO",
         entryPoint:
-          "https://idserver.servizicie.interno.gov.it:8443/idp/profile/SAML2/Redirect/SSO",
-        logoutUrl: ""
+          "https://preproduzione.idserver.servizicie.interno.gov.it/idp/profile/SAML2/Redirect/SSO",
+        logoutUrl:
+          "https://preproduzione.idserver.servizicie.interno.gov.it/idp/profile/SAML2/Redirect/SLO"
       });
     }
   });

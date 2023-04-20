@@ -2,7 +2,6 @@ import { IDPEntityDescriptor } from "../types/IDPEntityDescriptor";
 
 import { NonEmptyArray } from "fp-ts/lib/NonEmptyArray";
 
-// tslint:disable-next-line: no-submodule-imports
 import { NonEmptyString } from "@pagopa/ts-commons/lib/strings";
 
 export const mockIdpMetadata: Record<string, IDPEntityDescriptor> = {
@@ -21,6 +20,17 @@ export const mockCIEIdpMetadata: Record<string, IDPEntityDescriptor> = {
       "https://idserver.servizicie.interno.gov.it:8443/idp/profile/SAML2/POST/SSO",
     entryPoint:
       "https://idserver.servizicie.interno.gov.it:8443/idp/profile/SAML2/Redirect/SSO",
+    logoutUrl: ""
+  }
+};
+
+export const mockCIETestIdpMetadata: Record<string, IDPEntityDescriptor> = {
+  xx_servizicie_coll: {
+    cert: (["CERT"] as unknown) as NonEmptyArray<NonEmptyString>,
+    entityID:
+      "https://collaudo.idserver.servizicie.interno.gov.it/idp/profile/SAML2/POST/SSO",
+    entryPoint:
+      "https://collaudo.idserver.servizicie.interno.gov.it/idp/profile/SAML2/Redirect/SLO",
     logoutUrl: ""
   }
 };

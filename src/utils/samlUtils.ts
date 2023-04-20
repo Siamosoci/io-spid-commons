@@ -4,9 +4,8 @@
  * SPID protocol has some peculiarities that need to be addressed
  * to make request, metadata and responses compliant.
  */
-// tslint:disable-next-line: no-submodule-imports
+import * as jose from "jose";
 import { UTCISODateFromString } from "@pagopa/ts-commons/lib/dates";
-// tslint:disable-next-line: no-submodule-imports
 import { NonEmptyString } from "@pagopa/ts-commons/lib/strings";
 import { distanceInWordsToNow, isAfter, subDays } from "date-fns";
 import { Request as ExpressRequest } from "express";
@@ -21,12 +20,16 @@ import * as TE from "fp-ts/lib/TaskEither";
 import * as t from "io-ts";
 import { pki } from "node-forge";
 import { SamlConfig } from "passport-saml";
-// tslint:disable-next-line: no-submodule-imports
 import { MultiSamlConfig } from "passport-saml/multiSamlStrategy";
 import * as xmlCrypto from "xml-crypto";
 import { Builder, parseStringPromise } from "xml2js";
 import { DOMParser } from "xmldom";
 import { SPID_LEVELS, SPID_URLS, SPID_USER_ATTRIBUTES } from "../config";
+import { EventTracker } from "..";
+import {
+  DEFAULT_LOLLIPOP_HASH_ALGORITHM,
+  ILollipopParams
+} from "../types/lollipop";
 import { logger } from "./logger";
 import {
   ContactType,
@@ -35,14 +38,14 @@ import {
   IServiceProviderConfig,
   ISpidStrategyOptions
 } from "./middleware";
+import { IIssueInstantWithAuthnContextCR } from "./saml";
 
 export type SamlAttributeT = keyof typeof SPID_USER_ATTRIBUTES;
 
 interface IEntrypointCerts {
-  // tslint:disable-next-line: readonly-array
-  cert: NonEmptyString[];
-  entryPoint?: string;
-  idpIssuer?: string;
+  readonly cert: ReadonlyArray<NonEmptyString>;
+  readonly entryPoint?: string;
+  readonly idpIssuer?: string;
 }
 
 export const SAML_NAMESPACE = {
@@ -52,14 +55,26 @@ export const SAML_NAMESPACE = {
   XMLDSIG: "http://www.w3.org/2000/09/xmldsig#"
 };
 
+export const XML_TAGS = {
+  LANG: "xml:lang"
+};
+
+export const SPID_TAGS = {
+  ENTITY_TYPE: "spid:EntityType",
+  FISCAL_CODE: "spid:FiscalCode",
+  IPA_CODE: "spid:IPACode",
+  VAT_NUMBER: "spid:VATNumber"
+};
+
 export const ISSUER_FORMAT = "urn:oasis:names:tc:SAML:2.0:nameid-format:entity";
 
-const decodeBase64 = (s: string) => Buffer.from(s, "base64").toString("utf8");
+const decodeBase64 = (s: string): string =>
+  Buffer.from(s, "base64").toString("utf8");
 
 /**
  * Remove prefix and suffix from x509 certificate.
  */
-const cleanCert = (cert: string) =>
+const cleanCert = (cert: string): string =>
   cert
     .replace(/-+BEGIN CERTIFICATE-+\r?\n?/, "")
     .replace(/-+END CERTIFICATE-+\r?\n?/, "")
@@ -69,8 +84,107 @@ const SAMLResponse = t.type({
   SAMLResponse: t.string
 });
 
+export const InfoNotAvailable = "NOT AVAILABLE";
+
+/**
+ * If an eventHandler and a feature flag are provided this function logs the timing deltas.
+ * This is useful to monitor the timings and to adjust the clockSkewMs variable
+ */
+export const extractAndLogTimings = (
+  startTime: number,
+  idpIssuer: string,
+  requestId: string,
+  clockSkewMs: number = 0,
+  eventHandler?: EventTracker,
+  hasClockSkewLoggingEvent?: boolean
+  // eslint-disable-next-line max-params
+) => (info: IIssueInstantWithAuthnContextCR): TE.TaskEither<never, void> => {
+  // when clockSkewMs is set to -1 the validations are always true, so we skip the logs in that case
+  if (eventHandler && hasClockSkewLoggingEvent && clockSkewMs !== -1) {
+    const extractNotOnOrAfterDelta = (
+      element: Element
+    ): E.Either<Error, string> =>
+      pipe(
+        NonEmptyString.decode(element.getAttribute("NotOnOrAfter")),
+        E.chain(UTCISODateFromString.decode),
+        E.mapLeft(() => new Error("Could not find/convert NotOnOrAfter")),
+        E.map(NotOnOrAfter =>
+          String(NotOnOrAfter.getTime() - (startTime - clockSkewMs))
+        )
+      );
+
+    const ResponseIssueInstantClockSkew = String(
+      startTime + clockSkewMs - info.IssueInstant.getTime()
+    );
+    const AssertionIssueInstantClockSkew = String(
+      startTime + clockSkewMs - info.AssertionIssueInstant.getTime()
+    );
+    const AssertionNotBeforeClockSkew = pipe(
+      info.Assertion.getAttribute("NotBefore"),
+      NonEmptyString.decode,
+      E.chain(UTCISODateFromString.decode),
+      E.map(NotBefore => String(startTime + clockSkewMs - NotBefore.getTime())),
+      E.getOrElseW(() => InfoNotAvailable)
+    );
+    const AssertionSubjectNotOnOrAfterClockSkew = pipe(
+      info.Assertion.getElementsByTagNameNS(
+        SAML_NAMESPACE.ASSERTION,
+        "Subject"
+      ).item(0),
+      O.fromNullable,
+      O.chainNullableK(Subject =>
+        Subject.getElementsByTagNameNS(
+          SAML_NAMESPACE.ASSERTION,
+          "SubjectConfirmation"
+        ).item(0)
+      ),
+      O.chainNullableK(SubjectConfirmation =>
+        SubjectConfirmation.getElementsByTagNameNS(
+          SAML_NAMESPACE.ASSERTION,
+          "SubjectConfirmationData"
+        ).item(0)
+      ),
+      E.fromOption(() => new Error("Could not find elements")),
+      E.chainW(extractNotOnOrAfterDelta),
+      E.getOrElseW(() => InfoNotAvailable)
+    );
+    const AssertionConditionsNotOnOrAfterClockSkew = pipe(
+      info.Assertion.getElementsByTagNameNS(
+        SAML_NAMESPACE.ASSERTION,
+        "Conditions"
+      ).item(0),
+      O.fromNullable,
+      E.fromOption(() => new Error("Could not find elements")),
+      E.chainW(extractNotOnOrAfterDelta),
+      E.getOrElseW(() => InfoNotAvailable)
+    );
+
+    const timings = {
+      AssertionConditionsNotOnOrAfterClockSkew,
+      AssertionIssueInstantClockSkew,
+      AssertionNotBeforeClockSkew,
+      AssertionSubjectNotOnOrAfterClockSkew,
+      ResponseIssueInstantClockSkew
+    };
+
+    eventHandler({
+      data: {
+        idpIssuer,
+        message: "Clockskew validations logging",
+        requestId,
+        ...timings
+      },
+      name: "spid.info.clockskew",
+      type: "INFO"
+    });
+  }
+
+  return TE.right(void 0);
+};
+
 /**
  * True if the element contains at least one element signed using hamc
+ *
  * @param e
  */
 const isSignedWithHmac = (e: Element): boolean => {
@@ -105,18 +219,16 @@ export const getXmlFromSamlResponse = (body: unknown): O.Option<Document> =>
  * ie. for <StatusMessage>ErrorCode nr22</StatusMessage>
  * returns "22"
  */
-export function getErrorCodeFromResponse(doc: Document): O.Option<string> {
-  return pipe(
+export const getErrorCodeFromResponse = (doc: Document): O.Option<string> =>
+  pipe(
     O.fromNullable(
       doc.getElementsByTagNameNS(SAML_NAMESPACE.PROTOCOL, "StatusMessage")
     ),
-    O.chain(responseStatusMessageEl => {
-      return responseStatusMessageEl &&
-        responseStatusMessageEl[0] &&
-        responseStatusMessageEl[0].textContent
+    O.chain(responseStatusMessageEl =>
+      responseStatusMessageEl?.[0]?.textContent
         ? O.some(responseStatusMessageEl[0].textContent.trim())
-        : O.none;
-    }),
+        : O.none
+    ),
     O.chain(errorString => {
       const indexString = "ErrorCode nr";
       const errorCode = errorString.slice(
@@ -125,19 +237,17 @@ export function getErrorCodeFromResponse(doc: Document): O.Option<string> {
       return errorCode !== "" ? O.some(errorCode) : O.none;
     })
   );
-}
 
 /**
  * Extracts the issuer field from the response body.
  */
-export const getSamlIssuer = (doc: Document): O.Option<string> => {
-  return pipe(
+export const getSamlIssuer = (doc: Document): O.Option<string> =>
+  pipe(
     O.fromNullable(
       doc.getElementsByTagNameNS(SAML_NAMESPACE.ASSERTION, "Issuer").item(0)
     ),
     O.chainNullableK(_ => _.textContent?.trim())
   );
-};
 
 /**
  * Extracts IDP entityID from query parameter (if any).
@@ -150,8 +260,8 @@ export const getSamlIssuer = (doc: Document): O.Option<string> => {
 const getEntrypointCerts = (
   req: ExpressRequest,
   idps: ISpidStrategyOptions["idp"]
-): O.Option<IEntrypointCerts> => {
-  return pipe(
+): O.Option<IEntrypointCerts> =>
+  pipe(
     O.fromNullable(req),
     O.chainNullableK(r => r.query),
     O.chainNullableK(q => q.entityID),
@@ -177,7 +287,7 @@ const getEntrypointCerts = (
       O.some({
         cert: pipe(
           idps,
-          collect(Ord)((_, idp) => (idp && idp.cert ? idp.cert : [])),
+          collect(Ord)((_, idp) => idp?.cert || []),
           flatten
         ),
         // TODO: leave entryPoint undefined when this gets fixed
@@ -186,7 +296,6 @@ const getEntrypointCerts = (
       } as IEntrypointCerts)
     )
   );
-};
 
 export const getIDFromRequest = (requestXML: string): O.Option<string> => {
   const xmlRequest = new DOMParser().parseFromString(requestXML, "text/xml");
@@ -211,7 +320,7 @@ const getAuthnContextValueFromResponse = (
     SAML_NAMESPACE.ASSERTION,
     "AuthnContextClassRef"
   );
-  return responseAuthLevelEl[0] && responseAuthLevelEl[0].textContent
+  return responseAuthLevelEl[0]?.textContent
     ? O.some(responseAuthLevelEl[0].textContent.trim())
     : O.none;
 };
@@ -222,8 +331,8 @@ const getAuthnContextValueFromResponse = (
 const getAuthSalmOptions = (
   req: ExpressRequest,
   decodedResponse?: string
-): O.Option<Partial<SamlConfig>> => {
-  return pipe(
+): O.Option<Partial<SamlConfig>> =>
+  pipe(
     O.fromNullable(req),
     O.chainNullableK(r => r.query),
     O.chainNullableK(q => q.authLevel),
@@ -255,12 +364,10 @@ const getAuthSalmOptions = (
           pipe(
             lookup(authnContext, SPID_URLS),
             // check if the parsed value is a valid SPID AuthLevel
-            O.map(authLevel => {
-              return {
-                authnContext,
-                forceAuthn: authLevel !== "SpidL1"
-              };
-            }),
+            O.map(authLevel => ({
+              authnContext,
+              forceAuthn: authLevel !== "SpidL1"
+            })),
             O.altW(() => {
               logger.error(
                 "SPID cannot find a valid authLevel for given authnContext: %s",
@@ -273,7 +380,6 @@ const getAuthSalmOptions = (
       )
     )
   );
-};
 
 /**
  * Reads dates information in x509 certificate
@@ -281,7 +387,7 @@ const getAuthSalmOptions = (
  *
  * @param samlCert x509 certificate as string
  */
-export function logSamlCertExpiration(samlCert: string): void {
+export const logSamlCertExpiration = (samlCert: string): void => {
   try {
     const out = pki.certificateFromPem(samlCert);
     if (out.validity.notAfter) {
@@ -300,7 +406,7 @@ export function logSamlCertExpiration(samlCert: string): void {
   } catch (e) {
     logger.error("Error calculating saml cert expiration: %s", e);
   }
-}
+};
 
 /**
  * This method extracts the correct IDP metadata
@@ -316,10 +422,9 @@ export const getSamlOptions: MultiSamlConfig["getSamlOptions"] = (
 ) => {
   try {
     // Get decoded response
-    const decodedResponse =
-      req.body && req.body.SAMLResponse
-        ? decodeBase64(req.body.SAMLResponse)
-        : undefined;
+    const decodedResponse = req.body?.SAMLResponse
+      ? decodeBase64(req.body.SAMLResponse)
+      : undefined;
 
     // Get SPID strategy options with IDPs metadata
     const maybeSpidStrategyOptions = O.fromNullable(
@@ -345,7 +450,7 @@ export const getSamlOptions: MultiSamlConfig["getSamlOptions"] = (
     }
     const entrypointCerts = pipe(
       maybeEntrypointCerts,
-      O.getOrElse(() => ({} as IEntrypointCerts))
+      O.getOrElse((): IEntrypointCerts => ({ cert: [] }))
     );
 
     // Get authnContext (SPID level) and forceAuthn from request payload
@@ -363,11 +468,12 @@ export const getSamlOptions: MultiSamlConfig["getSamlOptions"] = (
     const options = {
       ...maybeSpidStrategyOptions.value.sp,
       ...authOptions,
-      ...entrypointCerts
+      ...entrypointCerts,
+      cert: Array.from(entrypointCerts.cert)
     };
     return done(null, options);
   } catch (e) {
-    return done(e);
+    return done(e as Error);
   }
 };
 
@@ -375,10 +481,11 @@ export const getSamlOptions: MultiSamlConfig["getSamlOptions"] = (
 //  Service Provider Metadata
 //
 
+// eslint-disable-next-line @typescript-eslint/explicit-function-return-type
 const getSpidAttributesMetadata = (
   serviceProviderConfig: IServiceProviderConfig
-) => {
-  return serviceProviderConfig.requiredAttributes
+) =>
+  serviceProviderConfig.requiredAttributes
     ? serviceProviderConfig.requiredAttributes.attributes.map(item => ({
         $: {
           FriendlyName: SPID_USER_ATTRIBUTES[item] || "",
@@ -387,37 +494,38 @@ const getSpidAttributesMetadata = (
         }
       }))
     : [];
-};
 
+// eslint-disable-next-line @typescript-eslint/explicit-function-return-type
 const getSpidOrganizationMetadata = (
   serviceProviderConfig: IServiceProviderConfig
-) => {
-  return serviceProviderConfig.organization
+) =>
+  serviceProviderConfig.organization
     ? {
         Organization: {
           OrganizationName: {
-            $: { "xml:lang": "it" },
+            $: { [XML_TAGS.LANG]: "it" },
             _: serviceProviderConfig.organization.name
           },
           // must appear after organization name
-          // tslint:disable-next-line: object-literal-sort-keys
+          // eslint-disable-next-line sort-keys
           OrganizationDisplayName: {
-            $: { "xml:lang": "it" },
+            $: { [XML_TAGS.LANG]: "it" },
             _: serviceProviderConfig.organization.displayName
           },
           OrganizationURL: {
-            $: { "xml:lang": "it" },
+            $: { [XML_TAGS.LANG]: "it" },
             _: serviceProviderConfig.organization.URL
           }
         }
       }
     : {};
-};
 
+// eslint-disable-next-line @typescript-eslint/explicit-function-return-type
 const getSpidContactPersonMetadata = (
   serviceProviderConfig: IServiceProviderConfig
-) => {
-  return serviceProviderConfig.contacts
+  // eslint-disable-next-line sonarjs/cognitive-complexity
+) =>
+  serviceProviderConfig.contacts
     ? serviceProviderConfig.contacts
         .map(item => {
           const contact = {
@@ -432,13 +540,13 @@ const getSpidContactPersonMetadata = (
             return {
               Extensions: {
                 ...(item.extensions.IPACode
-                  ? { "spid:IPACode": item.extensions.IPACode }
+                  ? { [SPID_TAGS.IPA_CODE]: item.extensions.IPACode }
                   : {}),
                 ...(item.extensions.VATNumber
-                  ? { "spid:VATNumber": item.extensions.VATNumber }
+                  ? { [SPID_TAGS.VAT_NUMBER]: item.extensions.VATNumber }
                   : {}),
                 ...(item.extensions?.FiscalCode
-                  ? { "spid:FiscalCode": item.extensions.FiscalCode }
+                  ? { [SPID_TAGS.FISCAL_CODE]: item.extensions.FiscalCode }
                   : {}),
                 ...(item.entityType === EntityType.AGGREGATOR
                   ? { [`spid:${item.extensions.aggregatorType}`]: {} }
@@ -447,7 +555,7 @@ const getSpidContactPersonMetadata = (
               ...contact,
               $: {
                 ...contact.$,
-                "spid:entityType": item.entityType
+                [SPID_TAGS.ENTITY_TYPE]: item.entityType
               }
             };
           }
@@ -456,12 +564,12 @@ const getSpidContactPersonMetadata = (
         // Contacts array is limited to 3 elements
         .slice(0, 3)
     : {};
-};
 
+// eslint-disable-next-line @typescript-eslint/explicit-function-return-type
 const getKeyInfoForMetadata = (publicCert: string, privateKey: string) => ({
   file: privateKey,
-  getKey: () => Buffer.from(privateKey),
-  getKeyInfo: () =>
+  getKey: (): Buffer => Buffer.from(privateKey),
+  getKeyInfo: (): string =>
     `<X509Data><X509Certificate>${publicCert}</X509Certificate></X509Data>`
 });
 
@@ -469,51 +577,52 @@ export const getMetadataTamperer = (
   xmlBuilder: Builder,
   serviceProviderConfig: IServiceProviderConfig,
   samlConfig: SamlConfig
-) => (generateXml: string): TE.TaskEither<Error, string> => {
-  return pipe(
+) => (generateXml: string): TE.TaskEither<Error, string> =>
+  pipe(
     TE.tryCatch(() => parseStringPromise(generateXml), E.toError),
     TE.chain(o =>
       TE.tryCatch(async () => {
         // it is safe to mutate object here since it is
         // deserialized and serialized locally in this method
         const sso = o.EntityDescriptor.SPSSODescriptor[0];
-        // tslint:disable-next-line: no-object-mutation
+        // eslint-disable-next-line functional/immutable-data
         sso.$ = {
           ...sso.$,
           AuthnRequestsSigned: true,
           WantAssertionsSigned: true
         };
-        // tslint:disable-next-line: no-object-mutation
+        // eslint-disable-next-line functional/immutable-data
         sso.AssertionConsumerService[0].$.index = 0;
-        // tslint:disable-next-line: no-object-mutation
+        // eslint-disable-next-line functional/immutable-data
         sso.AttributeConsumingService = {
           $: {
             index: samlConfig.attributeConsumingServiceIndex
           },
           ServiceName: {
             $: {
-              "xml:lang": "it"
+              [XML_TAGS.LANG]: "it"
             },
             _: serviceProviderConfig.requiredAttributes.name
           },
           // must appear after attributes
-          // tslint:disable-next-line: object-literal-sort-keys
+          // eslint-disable-next-line sort-keys
           RequestedAttribute: getSpidAttributesMetadata(serviceProviderConfig)
         };
-        // tslint:disable-next-line: no-object-mutation
+        // eslint-disable-next-line functional/immutable-data
         o.EntityDescriptor = {
           ...o.EntityDescriptor,
           ...getSpidOrganizationMetadata(serviceProviderConfig)
         };
         if (serviceProviderConfig.contacts) {
-          // tslint:disable-next-line: no-object-mutation
+          // eslint-disable-next-line functional/immutable-data
           o.EntityDescriptor = {
             ...o.EntityDescriptor,
             $: {
               ...o.EntityDescriptor.$,
+              // eslint-disable-next-line @typescript-eslint/naming-convention
               "xmlns:spid": SAML_NAMESPACE.SPID
             },
-            // tslint:disable-next-line: no-inferred-empty-object-type
+
             ContactPerson: getSpidContactPersonMetadata(serviceProviderConfig)
           };
         }
@@ -533,15 +642,15 @@ export const getMetadataTamperer = (
         }
         const sig = new xmlCrypto.SignedXml();
         const publicCert = cleanCert(serviceProviderConfig.publicCert);
-        // tslint:disable-next-line: no-object-mutation
+        // eslint-disable-next-line functional/immutable-data
         sig.keyInfoProvider = getKeyInfoForMetadata(
           publicCert,
           samlConfig.privateCert
         );
-        // tslint:disable-next-line: no-object-mutation
+        // eslint-disable-next-line functional/immutable-data
         sig.signatureAlgorithm =
           "http://www.w3.org/2001/04/xmldsig-more#rsa-sha256";
-        // tslint:disable-next-line: no-object-mutation
+        // eslint-disable-next-line functional/immutable-data
         sig.signingKey = samlConfig.privateCert;
         sig.addReference(
           "//*[local-name(.)='EntityDescriptor']",
@@ -553,13 +662,13 @@ export const getMetadataTamperer = (
         );
         sig.computeSignature(xml, {
           // Place the signature tag before all other tags
+          // eslint-disable-next-line sort-keys
           location: { reference: "", action: "prepend" }
         });
         return sig.getSignedXml();
       }, E.toError)
     )
   );
-};
 
 //
 //  Authorize request
@@ -567,22 +676,56 @@ export const getMetadataTamperer = (
 
 export const getAuthorizeRequestTamperer = (
   xmlBuilder: Builder,
-  _: IServiceProviderConfig,
   samlConfig: SamlConfig
-) => (generateXml: string): TE.TaskEither<Error, string> => {
-  return pipe(
+) => (
+  generateXml: string,
+  lollipopParams?: ILollipopParams
+): TE.TaskEither<Error, string> =>
+  pipe(
     TE.tryCatch(() => parseStringPromise(generateXml), E.toError),
+    TE.chain(o =>
+      pipe(
+        lollipopParams,
+        O.fromNullable,
+        E.fromOption(() => o),
+        E.fold(TE.right, lParams =>
+          pipe(
+            lParams.hashAlgorithm,
+            O.fromNullable,
+            O.getOrElse(() => DEFAULT_LOLLIPOP_HASH_ALGORITHM),
+            TE.of,
+            TE.bindTo("hashingAlgo"),
+            TE.bind("jwkThumbprint", ({ hashingAlgo }) =>
+              TE.tryCatch(
+                () => jose.calculateJwkThumbprint(lParams.pubKey, hashingAlgo),
+                E.toError
+              )
+            ),
+            TE.map(
+              ({ hashingAlgo, jwkThumbprint }) =>
+                `${hashingAlgo}-${jwkThumbprint}`
+            ),
+            TE.chain(requestId =>
+              TE.tryCatch(async () => {
+                // eslint-disable-next-line functional/immutable-data
+                o["samlp:AuthnRequest"].$.ID = requestId;
+                return o;
+              }, E.toError)
+            )
+          )
+        )
+      )
+    ),
     TE.chain(o =>
       TE.tryCatch(async () => {
         // it is safe to mutate object here since it is
         // deserialized and serialized locally in this method
-        // tslint:disable-next-line: no-any
         const authnRequest = o["samlp:AuthnRequest"];
-        // tslint:disable-next-line: no-object-mutation no-delete
+        // eslint-disable-next-line fp/no-delete, functional/immutable-data
         delete authnRequest["samlp:NameIDPolicy"][0].$.AllowCreate;
-        // tslint:disable-next-line: no-object-mutation
+        // eslint-disable-next-line functional/immutable-data
         authnRequest["saml:Issuer"][0].$.NameQualifier = samlConfig.issuer;
-        // tslint:disable-next-line: no-object-mutation
+        // eslint-disable-next-line functional/immutable-data
         authnRequest["saml:Issuer"][0].$.Format = ISSUER_FORMAT;
         return o;
       }, E.toError)
@@ -591,7 +734,6 @@ export const getAuthorizeRequestTamperer = (
       TE.tryCatch(async () => xmlBuilder.buildObject(obj), E.toError)
     )
   );
-};
 
 //
 //  Validate response
@@ -621,9 +763,7 @@ export const validateIssuer = (
         E.mapLeft(() => new Error("Issuer element must be not empty")),
         E.chain(
           E.fromPredicate(
-            IssuerTextContent => {
-              return IssuerTextContent === idpIssuer;
-            },
+            IssuerTextContent => IssuerTextContent === idpIssuer,
             () => new Error(`Invalid Issuer. Expected value is ${idpIssuer}`)
           )
         ),
@@ -632,11 +772,11 @@ export const validateIssuer = (
     )
   );
 
-export const mainAttributeValidation = (
+export const mainAttributeValidation = (validationTimestamp: number) => (
   requestOrAssertion: Element,
   acceptedClockSkewMs: number = 0
-): E.Either<Error, Date> => {
-  return pipe(
+): E.Either<Error, Date> =>
+  pipe(
     NonEmptyString.decode(requestOrAssertion.getAttribute("ID")),
     E.mapLeft(() => new Error("Assertion must contain a non empty ID")),
     E.map(() => requestOrAssertion.getAttribute("Version")),
@@ -654,16 +794,15 @@ export const mainAttributeValidation = (
     E.chain(IssueInstant => utcStringToDate(IssueInstant, "IssueInstant")),
     E.chain(
       E.fromPredicate(
-        _ =>
-          _.getTime() <
+        IssueInstant =>
+          IssueInstant.getTime() <
           (acceptedClockSkewMs === -1
             ? Infinity
-            : Date.now() + acceptedClockSkewMs),
+            : validationTimestamp + acceptedClockSkewMs),
         () => new Error("IssueInstant must be in the past")
       )
     )
   );
-};
 
 export const isEmptyNode = (element: Element): boolean => {
   if (element.childNodes.length > 1) {
@@ -671,11 +810,14 @@ export const isEmptyNode = (element: Element): boolean => {
   } else if (
     element.firstChild &&
     element.firstChild.nodeType === element.ELEMENT_NODE
+    // eslint-disable-next-line sonarjs/no-duplicated-branches
   ) {
     return false;
   } else if (
     element.textContent &&
+    // eslint-disable-next-line no-useless-escape
     element.textContent.replace(/[\r\n\ ]+/g, "") !== ""
+    // eslint-disable-next-line sonarjs/no-duplicated-branches
   ) {
     return false;
   }
@@ -683,7 +825,7 @@ export const isEmptyNode = (element: Element): boolean => {
 };
 
 const isOverflowNumberOf = (
-  elemArray: readonly Element[],
+  elemArray: ReadonlyArray<Element>,
   maxNumberOfChildren: number
 ): boolean =>
   elemArray.filter(e => e.nodeType === e.ELEMENT_NODE).length >
@@ -699,9 +841,9 @@ export type TransformError = t.TypeOf<typeof TransformError>;
 export const transformsValidation = (
   targetElement: Element,
   idpIssuer: string
-): E.Either<TransformError, Element> => {
-  return pipe(
-    O.fromPredicate((elements: readonly Element[]) => elements.length > 0)(
+): E.Either<TransformError, Element> =>
+  pipe(
+    O.fromPredicate((elements: ReadonlyArray<Element>) => elements.length > 0)(
       Array.from(
         targetElement.getElementsByTagNameNS(
           SAML_NAMESPACE.XMLDSIG,
@@ -714,7 +856,7 @@ export const transformsValidation = (
       transformElements =>
         pipe(
           E.fromPredicate(
-            (_: readonly Element[]) => !isOverflowNumberOf(_, 4),
+            (_: ReadonlyArray<Element>) => !isOverflowNumberOf(_, 4),
             _ =>
               TransformError.encode({
                 idpIssuer,
@@ -726,13 +868,12 @@ export const transformsValidation = (
         )
     )
   );
-};
 
-const notOnOrAfterValidation = (
+const notOnOrAfterValidation = (validationTimestamp: number) => (
   element: Element,
   acceptedClockSkewMs: number = 0
-) => {
-  return pipe(
+): E.Either<Error, Date> =>
+  pipe(
     NonEmptyString.decode(element.getAttribute("NotOnOrAfter")),
     E.mapLeft(
       () => new Error("NotOnOrAfter attribute must be a non empty string")
@@ -744,19 +885,19 @@ const notOnOrAfterValidation = (
           NotOnOrAfter.getTime() >
           (acceptedClockSkewMs === -1
             ? -Infinity
-            : Date.now() - acceptedClockSkewMs),
+            : validationTimestamp - acceptedClockSkewMs),
         () => new Error("NotOnOrAfter must be in the future")
       )
     )
   );
-};
 
-export const assertionValidation = (
+// eslint-disable-next-line max-lines-per-function
+export const assertionValidation = (validationTimestamp: number) => (
   Assertion: Element,
   samlConfig: SamlConfig,
   InResponseTo: string,
   requestAuthnContextClassRef: string
-  // tslint:disable-next-line: no-big-function
+  // eslint-disable-next-line sonarjs/cognitive-complexity
 ): E.Either<Error, HTMLCollectionOf<Element>> => {
   const acceptedClockSkewMs = samlConfig.acceptedClockSkewMs || 0;
   return pipe(
@@ -769,7 +910,7 @@ export const assertionValidation = (
       )
     ),
     E.chain(notSignedWithHmacPredicate),
-    // tslint:disable-next-line: no-big-function
+    // eslint-disable-next-line max-lines-per-function, sonarjs/cognitive-complexity
     E.chain(() =>
       pipe(
         E.fromOption(() => new Error("Subject element must be present"))(
@@ -919,7 +1060,7 @@ export const assertionValidation = (
                 ),
                 E.chain(SubjectConfirmationData =>
                   pipe(
-                    notOnOrAfterValidation(
+                    notOnOrAfterValidation(validationTimestamp)(
                       SubjectConfirmationData,
                       acceptedClockSkewMs
                     ),
@@ -952,7 +1093,7 @@ export const assertionValidation = (
             )
           )
         ),
-        // tslint:disable-next-line: no-big-function
+        // eslint-disable-next-line max-lines-per-function
         E.chain(() =>
           pipe(
             E.fromOption(
@@ -973,11 +1114,14 @@ export const assertionValidation = (
             ),
             E.chain(Conditions =>
               pipe(
-                notOnOrAfterValidation(Conditions, acceptedClockSkewMs),
+                notOnOrAfterValidation(validationTimestamp)(
+                  Conditions,
+                  acceptedClockSkewMs
+                ),
                 E.map(() => Conditions)
               )
             ),
-            E.chain(Conditions =>
+            E.chainFirst(Conditions =>
               pipe(
                 NonEmptyString.decode(Conditions.getAttribute("NotBefore")),
                 E.mapLeft(
@@ -990,11 +1134,10 @@ export const assertionValidation = (
                       NotBefore.getTime() <=
                       (acceptedClockSkewMs === -1
                         ? Infinity
-                        : Date.now() + acceptedClockSkewMs),
+                        : validationTimestamp + acceptedClockSkewMs),
                     () => new Error("NotBefore must be in the past")
                   )
-                ),
-                E.map(() => Conditions)
+                )
               )
             ),
             E.chain(Conditions =>
@@ -1015,6 +1158,7 @@ export const assertionValidation = (
                 E.chain(
                   E.fromPredicate(
                     PR.not(isEmptyNode),
+                    // eslint-disable-next-line sonarjs/no-identical-functions
                     () =>
                       new Error(
                         "AudienceRestriction element must be present and not empty"
@@ -1107,19 +1251,17 @@ export const assertionValidation = (
                         ),
                         E.chain(
                           E.fromPredicate(
-                            AuthnContextClassRef => {
-                              return requestAuthnContextClassRef ===
-                                SPID_LEVELS.SpidL2
+                            AuthnContextClassRef =>
+                              requestAuthnContextClassRef === SPID_LEVELS.SpidL2
                                 ? AuthnContextClassRef === SPID_LEVELS.SpidL2 ||
-                                    AuthnContextClassRef === SPID_LEVELS.SpidL3
+                                  AuthnContextClassRef === SPID_LEVELS.SpidL3
                                 : requestAuthnContextClassRef ===
                                   SPID_LEVELS.SpidL1
                                 ? AuthnContextClassRef === SPID_LEVELS.SpidL1 ||
                                   AuthnContextClassRef === SPID_LEVELS.SpidL2 ||
                                   AuthnContextClassRef === SPID_LEVELS.SpidL3
                                 : requestAuthnContextClassRef ===
-                                  AuthnContextClassRef;
-                            },
+                                  AuthnContextClassRef,
                             () =>
                               new Error(
                                 "AuthnContextClassRef value not expected"

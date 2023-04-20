@@ -4,9 +4,7 @@
  * SPID protocol has some peculiarities that need to be addressed
  * to make request, metadata and responses compliant.
  */
-// tslint:disable-next-line: no-submodule-imports
 import { UTCISODateFromString } from "@pagopa/ts-commons/lib/dates";
-// tslint:disable-next-line: no-submodule-imports
 import { NonEmptyString } from "@pagopa/ts-commons/lib/strings";
 import { predicate as PR } from "fp-ts";
 import { difference } from "fp-ts/lib/Array";
@@ -27,7 +25,8 @@ import {
   notSignedWithHmacPredicate,
   TransformError,
   transformsValidation,
-  validateIssuer
+  validateIssuer,
+  extractAndLogTimings
 } from "./samlUtils";
 import {
   getAuthorizeRequestTamperer,
@@ -40,7 +39,8 @@ import {
   isEmptyNode,
   logSamlCertExpiration,
   mainAttributeValidation,
-  SAML_NAMESPACE
+  SAML_NAMESPACE,
+  InfoNotAvailable
 } from "./samlUtils";
 
 export {
@@ -58,19 +58,62 @@ export {
 
 export type SamlAttributeT = keyof typeof SPID_USER_ATTRIBUTES;
 
+export interface ISAMLError extends Error {
+  readonly idpIssuer: string;
+  readonly requestId: string;
+}
+
+interface IBaseOutput {
+  readonly InResponseTo: NonEmptyString;
+  readonly Assertion: Element;
+  readonly IssueInstant: Date;
+  readonly Response: Element;
+  readonly AssertionIssueInstant: Date;
+}
+
+interface ISamlCacheType {
+  readonly RequestXML: string;
+  readonly createdAt: Date;
+  readonly idpIssuer: string;
+}
+
+type IRequestAndResponseStep = IBaseOutput & {
+  readonly SAMLRequestCache: ISamlCacheType;
+};
+
+type ISAMLRequest = IRequestAndResponseStep & { readonly Request: Document };
+
+type IIssueInstant = ISAMLRequest & {
+  readonly RequestIssueInstant: Date;
+  readonly RequestAuthnRequest: Element;
+};
+
+export type IIssueInstantWithAuthnContextCR = IIssueInstant & {
+  readonly RequestAuthnContextClassRef: NonEmptyString;
+};
+
+interface ITransformValidation {
+  readonly idpIssuer: string;
+  readonly message: string;
+  readonly numberOfTransforms: number;
+}
+
+// eslint-disable-next-line max-lines-per-function
 export const getPreValidateResponse = (
   strictValidationOptions?: StrictResponseValidationOptions,
-  eventHandler?: EventTracker
-  // tslint:disable-next-line: no-big-function
+  eventHandler?: EventTracker,
+  hasClockSkewLoggingEvent?: boolean
+  // eslint-disable-next-line max-lines-per-function
 ): PreValidateResponseT => (
   samlConfig,
   body,
   extendedCacheProvider,
   doneCb,
   callback
-  // tslint:disable-next-line: no-big-function
-) => {
+  // eslint-disable-next-line sonarjs/cognitive-complexity
+): void => {
   const maybeDoc = getXmlFromSamlResponse(body);
+  const startTime = Date.now();
 
   if (O.isNone(maybeDoc)) {
     throw new Error("Empty SAML response");
@@ -82,72 +125,71 @@ export const getPreValidateResponse = (
     "Response"
   );
 
+  const maybeIdpIssuer = getSamlIssuer(doc);
+
   const hasStrictValidation = pipe(
     O.fromNullable(strictValidationOptions),
-    O.chain(_ =>
+    O.chain(validationOptions =>
       pipe(
-        getSamlIssuer(doc),
-        O.chainNullableK(issuer => _[issuer])
+        maybeIdpIssuer,
+        O.chainNullableK(issuer => validationOptions[issuer])
       )
     ),
     O.getOrElse(() => false)
   );
 
-  interface IBaseOutput {
-    InResponseTo: NonEmptyString;
-    Assertion: Element;
-    IssueInstant: Date;
-    Response: Element;
-    AssertionIssueInstant: Date;
-  }
+  const idpIssuer: string = pipe(
+    maybeIdpIssuer,
+    O.getOrElse(() => InfoNotAvailable)
+  );
 
-  interface ISamlCacheType {
-    RequestXML: string;
-    createdAt: Date;
-    idpIssuer: string;
-  }
+  // here we are partially validating the response just to obtain a requestId (InResponseTo) before doing any more step.
+  // this is needed if we want to have to log the requestId at any step further
+  const errorOrPartiallyValidatedResponse: E.Either<
+    Error,
+    { readonly InResponseTo: NonEmptyString; readonly Response: Element }
+  > = pipe(
+    responsesCollection,
+    E.fromPredicate(
+      coll => coll.length < 2,
+      _ => new Error("SAML Response must have only one Response element")
+    ),
+    E.map(coll => coll.item(0)),
+    // this check is bound to the previous one, because we can receive no Response based on the official validator guidelines
+    E.chain(
+      E.fromNullable(new Error("Missing Response element inside SAML Response"))
+    ),
+    E.chain(Response =>
+      pipe(
+        NonEmptyString.decode(Response.getAttribute("InResponseTo")),
+        E.mapLeft(
+          () => new Error("InResponseTo must contain a non empty string")
+        ),
+        E.map(InResponseTo => ({ InResponseTo, Response }))
+      )
+    )
+  );
 
-  type IRequestAndResponseStep = IBaseOutput & {
-    SAMLRequestCache: ISamlCacheType;
-  };
-
-  type ISAMLRequest = IRequestAndResponseStep & { Request: Document };
-
-  type IIssueInstant = ISAMLRequest & {
-    RequestIssueInstant: Date;
-    RequestAuthnRequest: Element;
-  };
-
-  type IIssueInstantWithAuthnContextCR = IIssueInstant & {
-    RequestAuthnContextClassRef: NonEmptyString;
-  };
-
-  interface ITransformValidation {
-    idpIssuer: string;
-    message: string;
-    numberOfTransforms: number;
-  }
+  const requestId: string = pipe(
+    errorOrPartiallyValidatedResponse,
+    E.map(({ InResponseTo }) => InResponseTo),
+    E.getOrElse(() => InfoNotAvailable)
+  );
 
   const responseElementValidationStep: TaskEither<
     Error,
     IBaseOutput
   > = TE.fromEither(
     pipe(
-      responsesCollection,
-      E.fromPredicate(
-        _ => _.length < 2,
-        _ => new Error("SAML Response must have only one Response element")
-      ),
-      E.map(_ => _.item(0)),
-      E.chain(Response =>
-        E.fromOption(
-          () => new Error("Missing Reponse element inside SAML Response")
-        )(O.fromNullable(Response))
-      ),
-      E.chain(Response =>
+      errorOrPartiallyValidatedResponse,
+      E.chainW(({ Response, InResponseTo }) =>
         pipe(
-          mainAttributeValidation(Response, samlConfig.acceptedClockSkewMs),
+          mainAttributeValidation(startTime)(
+            Response,
+            samlConfig.acceptedClockSkewMs
+          ),
           E.map(IssueInstant => ({
+            InResponseTo,
             IssueInstant,
             Response
           }))
@@ -205,9 +247,9 @@ export const getPreValidateResponse = (
               E.fromOption(
                 () => new Error("StatusCode must contain a non empty Value")
               )(O.fromNullable(StatusCode.getAttribute("Value"))),
-              E.chain(statusCode => {
+              E.chain(statusCode =>
                 // TODO: Must show an error page to the user (26)
-                return pipe(
+                pipe(
                   statusCode,
                   E.fromPredicate(
                     Value =>
@@ -218,8 +260,8 @@ export const getPreValidateResponse = (
                         `Value attribute of StatusCode is invalid: ${statusCode}`
                       )
                   )
-                );
-              }),
+                )
+              ),
               E.map(() => _)
             )
           )
@@ -266,16 +308,10 @@ export const getPreValidateResponse = (
       ),
       E.chain(_ =>
         pipe(
-          NonEmptyString.decode(_.Response.getAttribute("InResponseTo")),
-          E.mapLeft(
-            () => new Error("InResponseTo must contain a non empty string")
+          mainAttributeValidation(startTime)(
+            _.Assertion,
+            samlConfig.acceptedClockSkewMs
           ),
-          E.map(inResponseTo => ({ ..._, InResponseTo: inResponseTo }))
-        )
-      ),
-      E.chain(_ =>
-        pipe(
-          mainAttributeValidation(_.Assertion, samlConfig.acceptedClockSkewMs),
           E.map(IssueInstant => ({
             AssertionIssueInstant: IssueInstant,
             ..._
@@ -452,7 +488,7 @@ export const getPreValidateResponse = (
   ): TaskEither<Error, IIssueInstantWithAuthnContextCR> =>
     pipe(
       TE.fromEither(
-        assertionValidation(
+        assertionValidation(startTime)(
           _.Assertion,
           samlConfig,
           _.InResponseTo,
@@ -465,7 +501,7 @@ export const getPreValidateResponse = (
           return TE.right(Attributes);
         }
         const missingAttributes = difference(Eq)(
-          // tslint:disable-next-line: no-any
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
           (samlConfig as any).attributes?.attributes?.attributes || [
             "Request attributes must be defined"
           ],
@@ -565,25 +601,36 @@ export const getPreValidateResponse = (
       TE.map(() => _)
     );
 
+  /* LOGGING INFOS:
+   * having the idpIssuer and requestId as data here we leverage multiple advantages:
+   * 1. we can query based on the idp and display graphs about errors/usage
+   * 2. we know what idp is causing the error
+   * 3. having the requestId it's possible to analyze further the problem encountered
+   */
   const validationFailure = (error: Error | ITransformValidation): void => {
     if (eventHandler) {
-      TransformError.is(error)
-        ? eventHandler({
-            data: {
-              idpIssuer: error.idpIssuer,
-              message: error.message,
-              numberOfTransforms: String(error.numberOfTransforms)
-            },
-            name: "spid.error.transformOccurenceOverflow",
-            type: "ERROR"
-          })
-        : eventHandler({
-            data: {
-              message: error.message
-            },
-            name: "spid.error.generic",
-            type: "ERROR"
-          });
+      if (TransformError.is(error)) {
+        eventHandler({
+          data: {
+            idpIssuer: error.idpIssuer,
+            message: error.message,
+            numberOfTransforms: String(error.numberOfTransforms),
+            requestId
+          },
+          name: "spid.error.transformOccurenceOverflow",
+          type: "ERROR"
+        });
+      } else {
+        eventHandler({
+          data: {
+            idpIssuer,
+            message: error.message,
+            requestId
+          },
+          name: "spid.error.generic",
+          type: "ERROR"
+        });
+      }
     }
     return callback(E.toError(error.message));
   };
@@ -604,7 +651,8 @@ export const getPreValidateResponse = (
       eventHandler({
         data: {
           idpIssuer: _.SAMLRequestCache.idpIssuer,
-          message: "Missing Request signature"
+          message: "Missing Request signature",
+          requestId: _.InResponseTo
         },
         name: "spid.error.signature",
         type: "INFO"
@@ -613,18 +661,29 @@ export const getPreValidateResponse = (
     return callback(null, true, _.InResponseTo);
   };
 
-  return pipe(
+  pipe(
     responseElementValidationStep,
     TE.chain(returnRequestAndResponseStep),
     TE.chain(parseSAMLRequestStep),
     TE.chain(getIssueInstantFromRequestStep),
-    TE.chain(issueInstantValidationStep),
-    TE.chain(assertionIssueInstantValidationStep),
+    TE.chainFirst(issueInstantValidationStep),
+    TE.chainFirst(assertionIssueInstantValidationStep),
     TE.chain(authnContextClassRefValidationStep),
-    TE.chain(attributesValidationStep),
-    TE.chain(responseIssuerValidationStep),
-    TE.chain(assertionIssuerValidationStep),
-    TE.chainW(transformValidationStep),
+    TE.chainFirst(attributesValidationStep),
+    TE.chainFirst(responseIssuerValidationStep),
+    TE.chainFirst(assertionIssuerValidationStep),
+    TE.chainFirstW(transformValidationStep),
+    // log timings infos
+    TE.chainFirstW(
+      extractAndLogTimings(
+        startTime,
+        idpIssuer,
+        requestId,
+        samlConfig.acceptedClockSkewMs,
+        eventHandler,
+        hasClockSkewLoggingEvent
+      )
+    ),
     TE.bimap(validationFailure, validationSuccess)
   )().catch(callback);
 };
