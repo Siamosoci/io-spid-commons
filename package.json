@@ -4,7 +4,7 @@
   "description": "Common code for integrating SPID authentication",
   "repository": {
     "type": "git",
-    "url": "git@github.com:mamacrowd/io-spid-commons.git"
+    "url": "https://github.com/mamacrowd/io-spid-commons"
   },
   "bin": {
     "startup-idps-metadata": "dist/bin/startup-idps-metadata.js"
