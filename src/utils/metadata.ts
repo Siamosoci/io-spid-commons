@@ -200,18 +200,22 @@ export const fetchIdpsMetadata = (
  */
 export const parseStartupIdpsMetadata = (
   idpsMetadata: Record<string, string>
-): Record<string, IDPEntityDescriptor> =>
-  pipe(
+): Record<string, IDPEntityDescriptor> => {
+  const idps: { [key: string]: string; } = { ...SPID_IDP_IDENTIFIERS, ...CIE_IDP_IDENTIFIERS };
+
+  return pipe(
     idpsMetadata,
-    R.reduce(Ord)(
+    R.reduceWithIndex(Ord)(
       [] as ReadonlyArray<IDPEntityDescriptor>,
-      (prev, metadataXML) => [
+      (key, prev, metadataXML) => [
         ...prev,
         ...pipe(
           parseIdpMetadata(metadataXML),
-          E.getOrElseW(() => [])
+          E.getOrElseW(() => []),
+          newIdps => { newIdps.forEach(idp => idps[idp.entityID] = key); return newIdps; }
         )
       ]
     ),
-    mapIpdMetadataL({ ...SPID_IDP_IDENTIFIERS, ...CIE_IDP_IDENTIFIERS })
+    mapIpdMetadataL(idps)
   );
+};

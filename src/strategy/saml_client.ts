@@ -16,6 +16,8 @@ import {
   PreValidateResponseT,
   XmlAuthorizeTamperer
 } from "./spid";
+import { getRelayStateFromSamlResponse } from "../utils/saml";
+import { readonly } from "io-ts";
 
 export class CustomSamlClient extends PassportSaml.SAML {
   constructor(
@@ -38,8 +40,7 @@ export class CustomSamlClient extends PassportSaml.SAML {
    * the response XML to satisfy SPID protocol constrains
    */
   public validatePostResponse(
-    body: { readonly SAMLResponse: string },
-
+    body: { readonly SAMLResponse: string, readonly RelayState: string },
     callback: (err: Error, profile?: unknown, loggedOut?: boolean) => void
   ): void {
     if (this.preValidateResponse) {
@@ -54,7 +55,24 @@ export class CustomSamlClient extends PassportSaml.SAML {
           }
           // go on with checks in case no error is found
           return super.validatePostResponse(body, (error, __, ___) => {
-            if (!error && isValid && AuthnRequestID) {
+            const maybeRelayState = getRelayStateFromSamlResponse(body);
+
+            const entityID =
+              pipe(
+                maybeRelayState,
+                O.chainNullableK(r => r.entityID),
+                O.getOrElse(() => "")
+              );
+            
+            //   { entityID: string, rnd: string; } = (() => {
+            //   try {
+            //     return JSON.parse(Buffer.from(decodeURIComponent(body.RelayState), "base64").toString("utf8"));
+            //   } catch {
+            //     return {};
+            //   }
+            // })();
+            
+            if (!error && isValid && AuthnRequestID && !entityID.startsWith('xx_')) {
               // eslint-disable-next-line @typescript-eslint/no-floating-promises
               pipe(
                 this.extededCacheProvider.remove(AuthnRequestID),

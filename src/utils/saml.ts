@@ -36,6 +36,7 @@ import {
   getSamlIssuer,
   getSamlOptions,
   getXmlFromSamlResponse,
+  getRelayStateFromSamlResponse,
   isEmptyNode,
   logSamlCertExpiration,
   mainAttributeValidation,
@@ -49,6 +50,7 @@ export {
   getIDFromRequest,
   getMetadataTamperer,
   getXmlFromSamlResponse,
+  getRelayStateFromSamlResponse,
   getSamlOptions,
   getErrorCodeFromResponse,
   getAuthorizeRequestTamperer,
@@ -533,21 +535,12 @@ export const getPreValidateResponse = (
       TE.fromEither(
         pipe(
           validateIssuer(_.Response, _.SAMLRequestCache.idpIssuer),
-          E.chainW(Issuer =>
-            pipe(
-              E.fromOption(() => "Format missing")(
-                O.fromNullable(Issuer.getAttribute("Format"))
-              ),
-              E.mapLeft(() => E.right(_)),
-              E.map(_1 =>
-                E.fromPredicate(
-                  FormatValue => !FormatValue || FormatValue === ISSUER_FORMAT,
-                  () =>
-                    new Error("Format attribute of Issuer element is invalid")
-                )(_1)
-              ),
-              E.map(() => E.right(_)),
-              E.toUnion
+          E.chain(
+            E.fromPredicate(Issuer => {
+                const FormatValue = Issuer.getAttribute("Format")
+                return !FormatValue || FormatValue === ISSUER_FORMAT;
+              },
+              () => new Error("Format attribute of Issuer element is invalid")
             )
           )
         )

@@ -1,7 +1,7 @@
 /**
  * SPID Passport strategy
  */
-import { EmailString, NonEmptyString } from "@pagopa/ts-commons/lib/strings";
+import { EmailString, NonEmptyString, OrganizationFiscalCode } from "@pagopa/ts-commons/lib/strings";
 import * as express from "express";
 import * as A from "fp-ts/lib/Array";
 import { pipe } from "fp-ts/lib/function";
@@ -29,15 +29,18 @@ interface IServiceProviderOrganization {
 }
 
 export enum ContactType {
-  OTHER = "other"
+  OTHER = "other",
+  BILLING = "billing"
 }
 
 export enum EntityType {
-  AGGREGATOR = "spid:aggregator"
+  AGGREGATOR = "spid:aggregator",
+  AGGREGATED = "spid:aggregated"
 }
 
 export enum AggregatorType {
-  PublicServicesFullOperator = "PublicServicesFullOperator"
+  PublicServicesFullOperator = "PublicServicesFullOperator",
+  Private = "Private"
 }
 
 const CommonExtension = t.interface({
@@ -47,27 +50,93 @@ const CommonExtension = t.interface({
 });
 type CommonExtension = t.TypeOf<typeof CommonExtension>;
 
+const DatiAnagrafici = t.interface({
+  idFiscaleIVA: t.interface({
+    idPaese: t.string,
+    idCodice: OrganizationFiscalCode
+  }),
+  anagrafica: t.interface({
+    denominazione: t.string
+  })
+});
+// type DatiAnagrafici = t.TypeOf<typeof DatiAnagrafici>;
+
+const Sede = t.interface({
+  indirizzo: t.string,
+  numeroCivico: t.string,
+  CAP: t.string,
+  comune: t.string,
+  provincia: t.string,
+  nazione: t.string
+})
+// type Sede = t.TypeOf<typeof Sede>;
+
+const CessionarioCommittenteExtension = t.interface({
+  datiAnagrafici: DatiAnagrafici,
+  sede: Sede
+});
+type CessionarioCommittenteExtension = t.TypeOf<typeof CessionarioCommittenteExtension>;
+
 const AggregatorExtension = t.intersection([
   t.interface({
-    aggregatorType: t.literal(AggregatorType.PublicServicesFullOperator)
+    aggregatorType: t.union([
+      t.literal(AggregatorType.Private),
+      t.literal(AggregatorType.PublicServicesFullOperator)
+    ])
   }),
   CommonExtension
 ]);
 type AggregatorExtension = t.TypeOf<typeof AggregatorExtension>;
 
-const ContactPerson = t.intersection([
+const PrivateSPExtension = CommonExtension;
+type PrivateSPExtension = t.TypeOf<typeof PrivateSPExtension>;
+
+const BillingExtension = t.interface({
+  cessionarioCommittente: CessionarioCommittenteExtension
+});
+type BillingExtension = t.TypeOf<typeof BillingExtension>;
+
+const ContactPersonOther = t.intersection([
   t.interface({
     company: t.string,
     contactType: t.literal(ContactType.OTHER),
+    email: EmailString
+  }),
+  t.union([
+    t.interface({
+      entityType: t.literal(EntityType.AGGREGATOR),
+      extensions: AggregatorExtension
+    }),
+    t.interface({
+      entityType: t.literal(EntityType.AGGREGATED),
+      extensions: PrivateSPExtension
+    })
+  ]),
+  t.partial({
+    phone: t.string
+  })
+]);
+// type ContactPersonOther = t.TypeOf<typeof ContactPersonOther>;
+
+const ContactPersonBilling = t.intersection([
+  t.interface({
+    company: t.string,
     email: EmailString,
-    entityType: t.literal(EntityType.AGGREGATOR),
-    extensions: AggregatorExtension
+    contactType: t.literal(ContactType.BILLING),
+    extensions: BillingExtension
   }),
   t.partial({
     phone: t.string
   })
 ]);
+// type ContactPersonBilling = t.TypeOf<typeof ContactPersonBilling>;
+
+const ContactPerson = t.union([
+  ContactPersonOther,
+  ContactPersonBilling
+]);
 type ContactPerson = t.TypeOf<typeof ContactPerson>;
+
 export interface IServiceProviderConfig {
   readonly requiredAttributes: {
     readonly attributes: ReadonlyArray<SamlAttributeT>;

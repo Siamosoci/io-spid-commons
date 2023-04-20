@@ -17,6 +17,7 @@ import * as O from "fp-ts/lib/Option";
 import { collect, lookup } from "fp-ts/lib/Record";
 import { Ord } from "fp-ts/lib/string";
 import * as TE from "fp-ts/lib/TaskEither";
+import { fromArray } from "fp-ts/lib/NonEmptyArray";
 import * as t from "io-ts";
 import { pki } from "node-forge";
 import { SamlConfig } from "passport-saml";
@@ -48,11 +49,18 @@ interface IEntrypointCerts {
   readonly idpIssuer?: string;
 }
 
+export interface IRelayState {
+  entityID?: string;
+  redirect_url?: string;
+  rnd: string;
+}
+
 export const SAML_NAMESPACE = {
   ASSERTION: "urn:oasis:names:tc:SAML:2.0:assertion",
   PROTOCOL: "urn:oasis:names:tc:SAML:2.0:protocol",
   SPID: "https://spid.gov.it/saml-extensions",
-  XMLDSIG: "http://www.w3.org/2000/09/xmldsig#"
+  XMLDSIG: "http://www.w3.org/2000/09/xmldsig#",
+  FPA: "https://spid.gov.it/invoicing-extensions"
 };
 
 export const XML_TAGS = {
@@ -63,13 +71,33 @@ export const SPID_TAGS = {
   ENTITY_TYPE: "spid:EntityType",
   FISCAL_CODE: "spid:FiscalCode",
   IPA_CODE: "spid:IPACode",
-  VAT_NUMBER: "spid:VATNumber"
+  VAT_NUMBER: "spid:VATNumber",
+  PRIVATE: "spid:Private"
 };
+
+export const FPA_TAGS = {
+  CESSIONARIO_COMMITTENTE: "fpa:CessionarioCommittente",
+  DATI_ANAGRAFICI: "fpa:DatiAnagrafici",
+  ID_FISCALE_IVA: "fpa:IdFiscaleIVA",
+  ID_PAESE: "fpa:IdPaese",
+  ID_CODICE: "fpa:IdCodice",
+  ANAGRAFICA: "fpa:Anagrafica",
+  DENOMINAZIONE: "fpa:Denominazione",
+  SEDE: "fpa:Sede",
+  INDIRIZZO: "fpa:Indirizzo",
+  NUMERO_CIVICO: "fpa:NumeroCivico",
+  CAP: "fpa:CAP",
+  COMUNE: "fpa:Comune",
+  PROVINCIA: "fpa:Provincia",
+  NAZIONE: "fpa:Nazione"
+}
 
 export const ISSUER_FORMAT = "urn:oasis:names:tc:SAML:2.0:nameid-format:entity";
 
 const decodeBase64 = (s: string): string =>
   Buffer.from(s, "base64").toString("utf8");
+const encodeBase64 = (s: string): string =>
+  Buffer.from(s, 'utf8').toString('base64');
 
 /**
  * Remove prefix and suffix from x509 certificate.
@@ -81,7 +109,8 @@ const cleanCert = (cert: string): string =>
     .replace(/\r\n/g, "\n");
 
 const SAMLResponse = t.type({
-  SAMLResponse: t.string
+  SAMLResponse: t.string,
+  RelayState: t.string
 });
 
 export const InfoNotAvailable = "NOT AVAILABLE";
@@ -209,8 +238,21 @@ export const notSignedWithHmacPredicate = E.fromPredicate(
 export const getXmlFromSamlResponse = (body: unknown): O.Option<Document> =>
   pipe(
     O.fromEither(SAMLResponse.decode(body)),
-    O.map(_ => decodeBase64(_.SAMLResponse)),
+    O.map(_ => {
+      const decoded = decodeBase64(_.SAMLResponse).replace(/\r?\n/g, '\n');
+      _.SAMLResponse = encodeBase64(decoded);
+      return decoded;
+    }),
     O.chain(_ => O.tryCatch(() => new DOMParser().parseFromString(_)))
+  );
+
+export const getRelayStateFromSamlResponse = (body: unknown): O.Option<IRelayState> =>
+  pipe(
+    O.fromEither(SAMLResponse.decode(body)),
+    O.map(_ => _.RelayState),
+    O.map(_ => Buffer.from(_, "base64")),
+    O.map(_ => _.toString("utf8")),
+    O.chain(_ => O.tryCatch(() => JSON.parse(_)))
   );
 
 /**
@@ -345,7 +387,7 @@ const getAuthSalmOptions = (
         lookup(authLevel, SPID_LEVELS),
         O.map(authnContext => ({
           authnContext,
-          forceAuthn: authLevel !== "SpidL1"
+          forceAuthn: true // authLevel !== "SpidL1"
         })),
         O.altW(() => {
           logger.error(
@@ -366,7 +408,7 @@ const getAuthSalmOptions = (
             // check if the parsed value is a valid SPID AuthLevel
             O.map(authLevel => ({
               authnContext,
-              forceAuthn: authLevel !== "SpidL1"
+              forceAuthn: true // authLevel !== "SpidL1"
             })),
             O.altW(() => {
               logger.error(
@@ -550,14 +592,50 @@ const getSpidContactPersonMetadata = (
                   : {}),
                 ...(item.entityType === EntityType.AGGREGATOR
                   ? { [`spid:${item.extensions.aggregatorType}`]: {} }
+                  : {}),
+                ...(item.entityType === EntityType.AGGREGATED
+                  ? { [SPID_TAGS.PRIVATE]: {} }
                   : {})
               },
               ...contact,
               $: {
                 ...contact.$,
-                [SPID_TAGS.ENTITY_TYPE]: item.entityType
+                [SPID_TAGS.ENTITY_TYPE]: item.entityType === EntityType.AGGREGATOR ? item.entityType : undefined
               }
             };
+          } else if (item.contactType === ContactType.BILLING) {
+            const datiAnagrafici = item.extensions.cessionarioCommittente.datiAnagrafici;
+            const sede = item.extensions.cessionarioCommittente.sede;
+            return {
+              Extensions: {
+                [FPA_TAGS.CESSIONARIO_COMMITTENTE]: {
+                  [FPA_TAGS.DATI_ANAGRAFICI]: {
+                    [FPA_TAGS.ID_FISCALE_IVA]: {
+                      [FPA_TAGS.ID_PAESE]: datiAnagrafici.idFiscaleIVA.idPaese,
+                      [FPA_TAGS.ID_CODICE]: datiAnagrafici.idFiscaleIVA.idCodice
+                    },
+                    [FPA_TAGS.ANAGRAFICA]: {
+                      [FPA_TAGS.DENOMINAZIONE]: datiAnagrafici.anagrafica.denominazione
+                    }
+                  },
+                  [FPA_TAGS.SEDE]: {
+                    [FPA_TAGS.INDIRIZZO]: sede.indirizzo,
+                    [FPA_TAGS.NUMERO_CIVICO]: sede.numeroCivico,
+                    [FPA_TAGS.CAP]: sede.CAP,
+                    [FPA_TAGS.COMUNE]: sede.comune,
+                    [FPA_TAGS.PROVINCIA]: sede.provincia,
+                    [FPA_TAGS.NAZIONE]: sede.nazione
+                  }
+                },
+                $: {
+                  "xmlns:fpa": SAML_NAMESPACE.FPA
+                },
+              },
+              ...contact,
+              $: {
+                ...contact.$,
+              }
+            }
           }
           return contact;
         })
@@ -751,10 +829,20 @@ export const validateIssuer = (
 ): E.Either<Error, Element> =>
   pipe(
     E.fromOption(() => new Error("Issuer element must be present"))(
-      O.fromNullable(
-        fatherElement
-          .getElementsByTagNameNS(SAML_NAMESPACE.ASSERTION, "Issuer")
-          .item(0)
+      fromArray(
+        Array.from(
+          fatherElement
+            .getElementsByTagNameNS(SAML_NAMESPACE.ASSERTION, "Issuer")
+        )
+      )
+    ),
+    E.chain(Issuers => // Issuer must be a direct child of fatherElement
+      E.fromOption(() => new Error("Issuer element must be present"))(
+        O.fromNullable(
+          Issuers.find(Issuer =>
+            Issuer.parentNode === fatherElement
+          )
+        )
       )
     ),
     E.chain(Issuer =>

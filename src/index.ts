@@ -5,6 +5,8 @@
  * Setups the endpoint to generate service provider metadata
  * and a scheduled process to refresh IDP metadata from providers.
  */
+import { randomBytes } from "crypto";
+// tslint:disable-next-line: no-submodule-imports
 import { toExpressHandler } from "@pagopa/ts-commons/lib/express";
 import {
   IResponseErrorForbiddenNotAuthorized,
@@ -43,13 +45,17 @@ import {
   getPreValidateResponse,
   getSamlIssuer,
   getSamlOptions,
-  getXmlFromSamlResponse
+  getXmlFromSamlResponse,
+  getRelayStateFromSamlResponse,
 } from "./utils/saml";
 import { getMetadataTamperer } from "./utils/saml";
+import { isIAcsUser, IAcsUser } from "./utils/user";
+import { IRelayState } from "./utils/samlUtils";
 
 // assertion consumer service express handler
 export type AssertionConsumerServiceT = (
-  userPayload: unknown
+  userPayload: IAcsUser,
+  relayState: Partial<IRelayState>
 ) => Promise<
   | IResponseErrorInternal
   | IResponseErrorValidation
@@ -116,10 +122,22 @@ const withSpidAuthMiddleware = (
       O.chain(getSamlIssuer),
       O.getOrElse(() => "UNKNOWN")
     );
+
+    const maybeRelayState = getRelayStateFromSamlResponse(req.body);
+
+    const getClientErrorRedirectionUrl = (defaultUrl: string) =>
+      pipe(
+        maybeRelayState,
+        O.chainNullableK(r => r.redirect_url),
+        O.getOrElse(() => defaultUrl)
+      );
+
     if (err) {
+      const [redirectPath, ...redirectQuery] = getClientErrorRedirectionUrl(clientErrorRedirectionUrl).split('?');
       const redirectionUrl =
-        clientErrorRedirectionUrl +
-        pipe(
+        redirectPath
+        + (redirectQuery?.length ? `?${redirectQuery.join('?')}&` : '?')
+        + pipe(
           maybeDoc,
           O.chain(getErrorCodeFromResponse),
           O.map(errorCode => `?errorCode=${errorCode}`),
@@ -133,14 +151,22 @@ const withSpidAuthMiddleware = (
       );
       return res.redirect(redirectionUrl);
     }
-    if (!user) {
+
+    if (!isIAcsUser(user)) {
+      const [redirectPath, ...redirectQuery] = getClientErrorRedirectionUrl(clientErrorRedirectionUrl).split('?');
+      const redirectionUrl =
+        redirectPath
+        + (redirectQuery?.length ? `?${redirectQuery.join('?')}&` : '?')
+        + 'errorMessage=invalidAcsUser';
+
       logger.error(
         "Spid Authentication|Authentication Error|ERROR=user_not_found|ISSUER=%s",
         issuer
       );
-      return res.redirect(clientLoginRedirectionUrl);
+      // return res.redirect(getClientErrorRedirectionUrl(clientLoginRedirectionUrl));
+      return res.redirect(redirectionUrl);
     }
-    const response = await acs(user);
+    const response = await acs(user, pipe(maybeRelayState, O.getOrElse(() => ({}))));
     response.apply(res);
   })(req, res, next);
 };
@@ -262,6 +288,20 @@ export const withSpid = ({
       // Setup SPID login handler
       app.get(
         appConfig.loginPath,
+        function(req, res, next){
+          // you could redirect to /login?RelayState=whatever, or set query here,
+          const relayStateObj: IRelayState = {
+            entityID: typeof req.query.entityID === 'string' ? req.query.entityID : undefined,
+            rnd: randomBytes(16).toString('base64'),
+            redirect_url: typeof req.query.redirect_url === 'string' ? req.query.redirect_url : undefined
+          };
+
+          // do not encode. it will be encoded later in redirect
+          req.query.RelayState = pipe(relayStateObj, JSON.stringify, Buffer.from, b => b.toString('base64')/*, encodeURIComponent*/);
+          
+          /*encodeURIComponent*/(Buffer.from(JSON.stringify(relayStateObj)).toString('base64'));
+          next();
+        },
         middlewareCatchAsInternalError((req, res, next) => {
           pipe(
             O.fromNullable(req.query),
