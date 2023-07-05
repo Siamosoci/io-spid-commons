@@ -6,21 +6,21 @@ import {
   AuthorizeOptions,
   SamlConfig,
   VerifyWithoutRequest,
-  VerifyWithRequest
+  VerifyWithRequest,
 } from "passport-saml";
 import { Strategy as SamlStrategy } from "passport-saml";
-import { RedisClient } from "redis";
+import { RedisClientType, RedisClusterType } from "redis";
 
 import { MultiSamlConfig } from "passport-saml/multiSamlStrategy";
 
 import { Second } from "@pagopa/ts-commons/lib/units";
 import { pipe } from "fp-ts/lib/function";
-import { DoneCallbackT } from "..";
+import { DoneCallbackT, IExtraLoginRequestParamConfig } from "..";
 import { ILollipopParams } from "../types/lollipop";
 import {
   getExtendedRedisCacheProvider,
   IExtendedCacheProvider,
-  noopCacheProvider
+  noopCacheProvider,
 } from "./redis_cache_provider";
 import { CustomSamlClient } from "./saml_client";
 
@@ -35,10 +35,10 @@ export type PreValidateResponseDoneCallbackT = (
   response: string
 ) => void;
 
-export type PreValidateResponseT = (
+export type PreValidateResponseT = <T extends Record<string, unknown>>(
   samlConfig: SamlConfig,
   body: unknown,
-  extendedRedisCacheProvider: IExtendedCacheProvider,
+  extendedRedisCacheProvider: IExtendedCacheProvider<T>,
   doneCb: PreValidateResponseDoneCallbackT | undefined,
 
   callback: (
@@ -49,19 +49,22 @@ export type PreValidateResponseT = (
   ) => void
 ) => void;
 
-export class SpidStrategy extends SamlStrategy {
-  private readonly extendedRedisCacheProvider: IExtendedCacheProvider;
+export class SpidStrategy<
+  T extends Record<string, unknown>
+> extends SamlStrategy {
+  private readonly extendedRedisCacheProvider: IExtendedCacheProvider<T>;
 
   // eslint-disable-next-line max-params
   constructor(
     private readonly options: SamlConfig,
     private readonly getSamlOptions: MultiSamlConfig["getSamlOptions"],
     verify: VerifyWithRequest | VerifyWithoutRequest,
-    private readonly redisClient: RedisClient,
+    private readonly redisClient: RedisClientType | RedisClusterType,
     private readonly tamperAuthorizeRequest?: XmlAuthorizeTamperer,
     private readonly tamperMetadata?: XmlTamperer,
     private readonly preValidateResponse?: PreValidateResponseT,
-    private readonly doneCb?: DoneCallbackT
+    private readonly doneCb?: DoneCallbackT,
+    private readonly extraLoginRequestParamConfig?: IExtraLoginRequestParamConfig<T>
   ) {
     super(options, verify);
     if (!options.requestIdExpirationPeriodMs) {
@@ -72,6 +75,7 @@ export class SpidStrategy extends SamlStrategy {
     // use our custom cache provider
     this.extendedRedisCacheProvider = getExtendedRedisCacheProvider(
       this.redisClient,
+      this.extraLoginRequestParamConfig?.codec,
       Math.floor(options.requestIdExpirationPeriodMs / 1000) as Second
     );
 
@@ -90,9 +94,10 @@ export class SpidStrategy extends SamlStrategy {
       const samlService = new CustomSamlClient(
         {
           ...this.options,
-          ...samlOptions
+          ...samlOptions,
         },
         this.extendedRedisCacheProvider,
+        this.extraLoginRequestParamConfig?.requestMapper,
         this.tamperAuthorizeRequest,
         this.preValidateResponse,
         (...args) => (this.doneCb ? this.doneCb(req.ip, ...args) : undefined)
@@ -102,7 +107,7 @@ export class SpidStrategy extends SamlStrategy {
       const strategy = Object.setPrototypeOf(
         {
           ...this,
-          _saml: samlService
+          _saml: samlService,
         },
         this
       );
@@ -121,7 +126,7 @@ export class SpidStrategy extends SamlStrategy {
       const samlService = new CustomSamlClient(
         {
           ...this.options,
-          ...samlOptions
+          ...samlOptions,
         },
         this.extendedRedisCacheProvider
       );
@@ -130,7 +135,7 @@ export class SpidStrategy extends SamlStrategy {
       const strategy = Object.setPrototypeOf(
         {
           ...this,
-          _saml: samlService
+          _saml: samlService,
         },
         this
       );
@@ -151,7 +156,7 @@ export class SpidStrategy extends SamlStrategy {
       const samlService = new CustomSamlClient(
         {
           ...this.options,
-          ...samlOptions
+          ...samlOptions,
         },
         this.extendedRedisCacheProvider
       );
@@ -161,7 +166,7 @@ export class SpidStrategy extends SamlStrategy {
       const strategy = Object.setPrototypeOf(
         {
           ...this,
-          _saml: samlService
+          _saml: samlService,
         },
         this
       );
@@ -176,7 +181,7 @@ export class SpidStrategy extends SamlStrategy {
         ? // Tamper the generated XML for service provider metadata
           pipe(
             this.tamperMetadata(originalXml),
-            TE.map(tamperedXml => callback(null, tamperedXml)),
+            TE.map((tamperedXml) => callback(null, tamperedXml)),
             TE.mapLeft(callback),
             TE.toUnion
           )()
