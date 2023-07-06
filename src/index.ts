@@ -136,12 +136,12 @@ const withSpidAuthMiddleware = (
       const [redirectPath, ...redirectQuery] = getClientErrorRedirectionUrl(clientErrorRedirectionUrl).split('?');
       const redirectionUrl =
         redirectPath
-        + (redirectQuery?.length ? `?${redirectQuery.join('?')}&` : '?')
+        + (redirectQuery?.length ? `?${redirectQuery.join('&')}&` : '?')
         + pipe(
           maybeDoc,
           O.chain(getErrorCodeFromResponse),
-          O.map(errorCode => `?errorCode=${errorCode}`),
-          O.getOrElse(() => `?errorMessage=${err}`)
+          O.map(errorCode => `errorCode=${errorCode}`),
+          O.getOrElse(() => `errorMessage=${err}`)
         );
       logger.error(
         "Spid Authentication|Authentication Error|ERROR=%s|ISSUER=%s|REDIRECT_TO=%s",
