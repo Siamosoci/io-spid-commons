@@ -122,18 +122,12 @@ const ContactPersonBilling = t.intersection([
   t.interface({
     company: t.string,
     email: EmailString,
-    contactType: t.literal(EntityType.BILLING),
+    contactType: t.literal(ContactType.BILLING),
     extensions: BillingExtension,
   }),
   t.partial({
     phone: t.string,
   }),
-]);
-// type ContactPersonBilling = t.TypeOf<typeof ContactPersonBilling>;
-
-const ContactPerson = t.union([
-  ContactPersonOther,
-  ContactPersonBilling,
 ]);
 // type ContactPersonBilling = t.TypeOf<typeof ContactPersonBilling>;
 
