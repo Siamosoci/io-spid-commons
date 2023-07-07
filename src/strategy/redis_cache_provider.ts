@@ -15,17 +15,18 @@ export type SAMLRequestCacheItem = t.TypeOf<typeof SAMLRequestCacheItem>;
 const SAMLRequestCacheItem = t.interface({
   RequestXML: t.string,
   createdAt: UTCISODateFromString,
-  idpIssuer: t.string
+  idpIssuer: t.string,
 });
 
-export interface IExtendedCacheProvider {
+export interface IExtendedCacheProvider<T extends Record<string, unknown>> {
   readonly save: (
     RequestXML: string,
-    samlConfig: SamlConfig
-  ) => TaskEither<Error, SAMLRequestCacheItem>;
+    samlConfig: SamlConfig,
+    extraLoginRequestParams: T | undefined
+  ) => TaskEither<Error, SAMLRequestCacheItem | (SAMLRequestCacheItem & T)>;
   readonly get: (
     AuthnRequestID: string
-  ) => TaskEither<Error, SAMLRequestCacheItem>;
+  ) => TaskEither<Error, SAMLRequestCacheItem | (SAMLRequestCacheItem & T)>;
   readonly remove: (AuthnRequestID: string) => TaskEither<Error, string>;
 }
 
@@ -49,41 +50,63 @@ export const noopCacheProvider = (): CacheProvider => ({
   save: (_, value, callback): void => {
     const v = {
       createdAt: new Date(),
-      value
+      value,
     };
     callback(null, v);
-  }
+  },
 });
 
-export const getExtendedRedisCacheProvider = (
-  redisClient: redis.RedisClient,
+export const getExtendedRedisCacheProvider = <
+  T extends Record<string, unknown> = Record<string, never>
+>(
+  redisClient: redis.RedisClientType | redis.RedisClusterType,
+  extraLoginRequestParamsCodec?: t.Type<T, T, unknown>,
   // 1 hour by default
   keyExpirationPeriodSeconds: Second = 3600 as Second,
   keyPrefix: string = "SAML-EXT-"
-): IExtendedCacheProvider => ({
-  get: (AuthnRequestID: string): TaskEither<Error, SAMLRequestCacheItem> =>
+): IExtendedCacheProvider<T> => ({
+  get: (
+    AuthnRequestID: string
+  ): TaskEither<Error, SAMLRequestCacheItem | (SAMLRequestCacheItem & T)> =>
     pipe(
-      TE.taskify(
-        (key: string, callback: (e: Error | null, value?: string) => void) => {
-          redisClient.get(key, (e, v) =>
-            // redis callbacks consider empty value as null instead of undefined,
-            //  hence the need for the following wrapper to convert nulls to undefined
-            callback(e, v === null ? undefined : v)
-          );
-        }
-      )(`${keyPrefix}${AuthnRequestID}`),
-      TE.mapLeft(
-        err => new Error(`SAML#ExtendedRedisCacheProvider: get() error ${err}`)
+      TE.tryCatch(
+        () => redisClient.get(`${keyPrefix}${AuthnRequestID}`),
+        E.toError
       ),
-      TE.chain(value =>
+      TE.mapLeft(
+        (err) =>
+          new Error(`SAML#ExtendedRedisCacheProvider: get() error ${err}`)
+      ),
+      // redis callbacks consider empty value as null instead of undefined,
+      // hence the need for the following wrapper to convert nulls to undefined
+      TE.chain(
+        TE.fromPredicate(
+          (v): v is string => v !== null,
+          () =>
+            // If the value is missing a specific error is returned
+            // This avoid to continue the execution with a Validation left from
+            // SAMLRequestCacheItem decode.
+            new Error("SAML#ExtendedRedisCacheProvider: get() value not found")
+        )
+      ),
+      TE.chain((value) =>
         TE.fromEither(
           pipe(
             E.parseJSON(value, E.toError),
-            E.chain(_ =>
+            E.chain((_) =>
               pipe(
                 SAMLRequestCacheItem.decode(_),
+                E.map((samlRequestCacheItem) => ({
+                  ...samlRequestCacheItem,
+                  ...pipe(
+                    extraLoginRequestParamsCodec,
+                    E.fromNullable(undefined),
+                    E.chainW((codec) => codec.decode(_)),
+                    E.getOrElseW(() => ({}))
+                  ),
+                })),
                 E.mapLeft(
-                  __ =>
+                  (__) =>
                     new Error(
                       `SAML#ExtendedRedisCacheProvider: get() error ${readableReport(
                         __
@@ -98,20 +121,21 @@ export const getExtendedRedisCacheProvider = (
     ),
   remove: (AuthnRequestID): TaskEither<Error, string> =>
     pipe(
-      TE.taskify(
-        (key: string, callback: (err: Error | null, value?: unknown) => void) =>
-          redisClient.del(key, callback)
-      )(`${keyPrefix}${AuthnRequestID}`),
+      TE.tryCatch(
+        () => redisClient.del(`${keyPrefix}${AuthnRequestID}`),
+        E.toError
+      ),
       TE.mapLeft(
-        err =>
+        (err) =>
           new Error(`SAML#ExtendedRedisCacheProvider: remove() error ${err}`)
       ),
       TE.map(() => AuthnRequestID)
     ),
   save: (
     RequestXML: string,
-    samlConfig: SamlConfig
-  ): TaskEither<Error, SAMLRequestCacheItem> =>
+    samlConfig: SamlConfig,
+    extraLoginRequestParams: T | undefined
+  ): TaskEither<Error, SAMLRequestCacheItem | (SAMLRequestCacheItem & T)> =>
     pipe(
       TE.fromEither(
         E.fromOption(
@@ -121,43 +145,39 @@ export const getExtendedRedisCacheProvider = (
             )
         )(getIDFromRequest(RequestXML))
       ),
-      TE.chain(AuthnRequestID =>
+      TE.chain((AuthnRequestID) =>
         pipe(
           TE.fromEither(
             E.fromOption(
               () => new Error("Missing idpIssuer inside configuration")
             )(O.fromNullable(samlConfig.idpIssuer))
           ),
-          TE.map(idpIssuer => ({ AuthnRequestID, idpIssuer }))
+          TE.map((idpIssuer) => ({ AuthnRequestID, idpIssuer }))
         )
       ),
-      TE.chain(_ => {
-        const v: SAMLRequestCacheItem = {
+      TE.chain((_) => {
+        const v: SAMLRequestCacheItem | (SAMLRequestCacheItem & T) = {
+          ...extraLoginRequestParams,
           RequestXML,
           createdAt: new Date(),
-          idpIssuer: _.idpIssuer
+          idpIssuer: _.idpIssuer,
         };
         return pipe(
-          TE.taskify(
-            (
-              key: string,
-              data: string,
-              flag: "EX",
-              expiration: number,
-              callback: (err: Error | null, value: unknown) => void
-            ) => redisClient.set(key, data, flag, expiration, callback)
-          )(
-            `${keyPrefix}${_.AuthnRequestID}`,
-            JSON.stringify(v),
-            "EX",
-            keyExpirationPeriodSeconds
+          TE.tryCatch(
+            () =>
+              redisClient.setEx(
+                `${keyPrefix}${_.AuthnRequestID}`,
+                keyExpirationPeriodSeconds,
+                JSON.stringify(v)
+              ),
+            E.toError
           ),
           TE.mapLeft(
-            err =>
+            (err) =>
               new Error(`SAML#ExtendedRedisCacheProvider: set() error ${err}`)
           ),
           TE.map(() => v)
         );
       })
-    )
+    ),
 });

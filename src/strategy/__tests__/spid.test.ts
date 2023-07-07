@@ -1,13 +1,11 @@
+import { RedisClientType } from "@redis/client";
 import * as express from "express";
-import { createMockRedis } from "mock-redis-client";
 import { Profile, VerifiedCallback } from "passport-saml";
-import { RedisClient } from "redis";
-import { logger } from "../../utils/logger";
 import { getSamlOptions } from "../../utils/saml";
 import * as redisCacheProvider from "../redis_cache_provider";
 import { SpidStrategy } from "../spid";
 
-const mockRedisClient: RedisClient = (createMockRedis() as any).createClient();
+const mockRedisClient = {} as RedisClientType;
 
 describe("SamlStrategy prototype arguments check", () => {
   let OriginalPassportSaml: any;
@@ -49,20 +47,20 @@ describe("SamlStrategy#constructor", () => {
         // `done` is a passport callback that signals success
         done(null, profile);
       },
-      mockRedisClient
+      mockRedisClient as any
     );
-    
+
     expect(spidStrategy["options"]).toHaveProperty(
       "requestIdExpirationPeriodMs",
       900000
     );
-    
+
     expect(spidStrategy["options"]).toHaveProperty(
       "cacheProvider",
       expectedNoopCacheProvider
     );
     expect(mockNoopCacheProvider).toBeCalledTimes(1);
-    
+
     expect(spidStrategy["extendedRedisCacheProvider"]).toBeTruthy();
   });
 });
