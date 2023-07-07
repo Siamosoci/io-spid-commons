@@ -53,7 +53,6 @@ describe("getXmlFromSamlResponse", () => {
   });
 });
 
-// tslint:disable-next-line: no-big-function
 describe("preValidateResponse", () => {
   const mockCallback = jest.fn();
   const mockGetXmlFromSamlResponse = jest
@@ -133,7 +132,9 @@ describe("preValidateResponse", () => {
     await asyncExpectOnCallback(mockCallback, expectedError);
     expect(mockEventTracker).toBeCalledWith({
       data: {
-        message: expectedError.message
+        message: expectedError.message,
+        requestId: expect.any(String),
+        idpIssuer: expect.any(String)
       },
       name: expectedGenericEventName,
       type: "ERROR"
@@ -152,7 +153,7 @@ describe("preValidateResponse", () => {
       mockTestIdpIssuer: true
     };
     getPreValidateResponse(strictValidationOption, mockEventTracker)(
-      { ...samlConfig, acceptedClockSkewMs: 0 },
+      { ...samlConfig, acceptedClockSkewMs: 2000 },
       mockBody,
       mockRedisCacheProvider,
       undefined,
@@ -163,7 +164,9 @@ describe("preValidateResponse", () => {
     await asyncExpectOnCallback(mockCallback, expectedError);
     expect(mockEventTracker).toBeCalledWith({
       data: {
-        message: expectedError.message
+        message: expectedError.message,
+        requestId: expect.any(String),
+        idpIssuer: expect.any(String)
       },
       name: expectedGenericEventName,
       type: "ERROR"
@@ -193,7 +196,9 @@ describe("preValidateResponse", () => {
     await asyncExpectOnCallback(mockCallback, expectedError);
     expect(mockEventTracker).toBeCalledWith({
       data: {
-        message: expectedError.message
+        message: expectedError.message,
+        requestId: expect.any(String),
+        idpIssuer: expect.any(String)
       },
       name: expectedGenericEventName,
       type: "ERROR"
@@ -235,7 +240,8 @@ describe("preValidateResponse", () => {
       data: {
         idpIssuer: expectedError.idpIssuer,
         message: expectedError.message,
-        numberOfTransforms: String(expectedError.numberOfTransforms)
+        numberOfTransforms: String(expectedError.numberOfTransforms),
+        requestId: expect.any(String)
       },
       name: expectedTransformEventName,
       type: "ERROR"
@@ -270,7 +276,8 @@ describe("preValidateResponse", () => {
       data: {
         idpIssuer: expectedError.idpIssuer,
         message: expectedError.message,
-        numberOfTransforms: String(expectedError.numberOfTransforms)
+        numberOfTransforms: String(expectedError.numberOfTransforms),
+        requestId: expect.any(String)
       },
       name: expectedTransformEventName,
       type: "ERROR"
@@ -318,7 +325,8 @@ describe("preValidateResponse", () => {
     expect(mockEventTracker).toBeCalledWith({
       data: {
         idpIssuer: mockTestIdpIssuer,
-        message: expect.any(String)
+        message: expect.any(String),
+        requestId: expect.any(String)
       },
       name: expectedSignatureErrorName,
       type: "INFO"
@@ -367,6 +375,42 @@ describe("preValidateResponse", () => {
     );
     expect(mockGetXmlFromSamlResponse).toBeCalledWith(mockBody);
     await asyncExpectOnCallback(mockCallback);
+  });
+
+  it("should preValidate succeed and log the timing deltas when hasClockSkewLoggingEvent is provided", async () => {
+    mockGetXmlFromSamlResponse.mockImplementationOnce(() =>
+      tryCatch(() => new DOMParser().parseFromString(getSamlResponse()))
+    );
+    const strictValidationOption: StrictResponseValidationOptions = {
+      mockTestIdpIssuer: true
+    };
+    getPreValidateResponse(strictValidationOption, mockEventTracker, true)(
+      { ...samlConfig, acceptedClockSkewMs: 0 },
+      mockBody,
+      mockRedisCacheProvider,
+      undefined,
+      mockCallback
+    );
+    expect(mockGetXmlFromSamlResponse).toBeCalledWith(mockBody);
+    await asyncExpectOnCallback(mockCallback);
+
+    expect(mockEventTracker).toHaveBeenCalledTimes(1);
+    expect(mockEventTracker).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: {
+          idpIssuer: expect.any(String),
+          message: "Clockskew validations logging",
+          requestId: expect.any(String),
+          AssertionConditionsNotOnOrAfterClockSkew: expect.any(String),
+          AssertionIssueInstantClockSkew: expect.any(String),
+          AssertionNotBeforeClockSkew: expect.any(String),
+          AssertionSubjectNotOnOrAfterClockSkew: expect.any(String),
+          ResponseIssueInstantClockSkew: expect.any(String)
+        },
+        name: "spid.info.clockskew",
+        type: "INFO"
+      })
+    );
   });
 
   it("should preValidate fail if timer desync exceeds acceptedClockSkewMs", async () => {
@@ -423,7 +467,9 @@ describe("preValidateResponse", () => {
       await asyncExpectOnCallback(mockCallback, expectedError);
       expect(mockEventTracker).toBeCalledWith({
         data: {
-          message: expectedError.message
+          message: expectedError.message,
+          requestId: expect.any(String),
+          idpIssuer: expect.any(String)
         },
         name: expectedGenericEventName,
         type: "ERROR"
@@ -440,7 +486,6 @@ describe("preValidateResponse", () => {
       mockGetXmlFromSamlResponse.mockImplementationOnce(() =>
         tryCatch(() => new DOMParser().parseFromString(samlResponseCIE))
       );
-      // tslint:disable-next-line: no-identical-functions
       mockGet.mockImplementation(() => {
         return fromEither(
           right({
@@ -488,7 +533,9 @@ describe("preValidateResponse", () => {
     await asyncExpectOnCallback(mockCallback, expectedError);
     expect(mockEventTracker).toBeCalledWith({
       data: {
-        message: expectedError.message
+        message: expectedError.message,
+        requestId: expect.any(String),
+        idpIssuer: expect.any(String)
       },
       name: expectedGenericEventName,
       type: "ERROR"

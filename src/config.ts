@@ -1,19 +1,25 @@
+/* eslint-disable @typescript-eslint/naming-convention */
 export const SPID_IDP_IDENTIFIERS = {
+  "https://id.eht.eu": "ehtid",
   "https://id.lepida.it/idp/shibboleth": "lepidaid",
   "https://identity.infocert.it": "infocertid",
   "https://identity.sieltecloud.it": "sielteid",
   "https://idp.namirialtsp.com/idp": "namirialid",
   "https://login.id.tim.it/affwebservices/public/saml2sso": "timid",
   "https://loginspid.aruba.it": "arubaid",
+  "https://loginspid.infocamere.it": "infocamereid",
   "https://posteid.poste.it": "posteid",
   "https://spid.intesa.it": "intesaid",
-  "https://spid.register.it": "spiditalia"
+  "https://spid.register.it": "spiditalia",
+  "https://spid.teamsystem.com/idp": "teamsystemid"
 };
 
 export const CIE_IDP_IDENTIFIERS = {
+  "https://collaudo.idserver.servizicie.interno.gov.it/idp/profile/SAML2/POST/SSO":
+    "xx_servizicie_coll",
   "https://idserver.servizicie.interno.gov.it/idp/profile/SAML2/POST/SSO":
     "xx_servizicie",
-  "https://idserver.servizicie.interno.gov.it:8443/idp/profile/SAML2/POST/SSO":
+  "https://preproduzione.idserver.servizicie.interno.gov.it/idp/profile/SAML2/POST/SSO":
     "xx_servizicie_test"
 };
 

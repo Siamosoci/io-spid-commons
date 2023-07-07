@@ -1,5 +1,3 @@
-// tslint:disable:no-any
-
 /**
  * mockReq
  * @returns {{header, accepts, acceptsEncodings, acceptsEncoding, acceptsCharsets, acceptsCharset, acceptsLanguages, acceptsLanguage, range, param, is, reset: resetMock}}
@@ -15,6 +13,7 @@ export default function mockReq(): any {
     acceptsLanguage: jest.fn(),
     acceptsLanguages: jest.fn(),
     header: jest.fn(),
+    headers: {},
     is: jest.fn(),
     param: jest.fn(),
     query: {},

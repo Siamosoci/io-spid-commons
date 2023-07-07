@@ -1,26 +1,19 @@
-// tslint:disable-next-line: no-submodule-imports
+import * as fs from "fs";
 import { ResponsePermanentRedirect } from "@pagopa/ts-commons/lib/responses";
 import {
   EmailString,
   FiscalCode,
   NonEmptyString
-  // tslint:disable-next-line: no-submodule-imports
 } from "@pagopa/ts-commons/lib/strings";
 import * as bodyParser from "body-parser";
 import * as express from "express";
 import { pipe } from "fp-ts/lib/function";
 import * as T from "fp-ts/lib/Task";
-import * as fs from "fs";
 import * as t from "io-ts";
 import passport = require("passport");
 import { SamlConfig } from "passport-saml";
 import * as redis from "redis";
-import {
-  AssertionConsumerServiceT,
-  IApplicationConfig,
-  LogoutT,
-  withSpid
-} from ".";
+import { ValidUrl } from "@pagopa/ts-commons/lib/url";
 import { logger } from "./utils/logger";
 import {
   AggregatorType,
@@ -28,13 +21,19 @@ import {
   EntityType,
   IServiceProviderConfig
 } from "./utils/middleware";
+import {
+  AssertionConsumerServiceT,
+  IApplicationConfig,
+  LogoutT,
+  withSpid
+} from ".";
 
 export const SpidUser = t.intersection([
   t.interface({
     // the following values may be set
     // by the calling application:
-    // authnContextClassRef: SpidLevel,
-    // issuer: Issuer
+    // authnContextClassRef -> SpidLevel,
+    // issuer -> Issuer
     getAssertionXml: t.Function
   }),
   t.partial({
@@ -81,16 +80,21 @@ const serviceProviderConfig: IServiceProviderConfig = {
     ],
     name: "Required attrs"
   },
+  spidCieTestUrl:
+    "https://collaudo.idserver.servizicie.interno.gov.it/idp/shibboleth",
   spidCieUrl:
     "https://preproduzione.idserver.servizicie.interno.gov.it/idp/shibboleth?Metadata",
   spidTestEnvUrl: "https://spid-testenv2:8088",
   // this line is commented due to a future refactor that enables spid-saml-check locally
   // spidValidatorUrl: "http://localhost:8080",
   strictResponseValidation: {
+    // eslint-disable-next-line @typescript-eslint/naming-convention
     "http://localhost:8080": true,
+    // eslint-disable-next-line @typescript-eslint/naming-convention
     "https://spid-testenv2:8088": true
   },
 
+  // eslint-disable-next-line sort-keys
   contacts: [
     {
       company: "Sogetto Aggregatore s.r.l",
@@ -128,11 +132,11 @@ const samlConfig: SamlConfig = {
 
 const acs: AssertionConsumerServiceT = async payload => {
   logger.info("acs:%s", JSON.stringify(payload));
-  return ResponsePermanentRedirect({ href: "/success?acs" });
+  return ResponsePermanentRedirect({ href: "/success?acs" } as ValidUrl);
 };
 
 const logout: LogoutT = async () =>
-  ResponsePermanentRedirect({ href: "/success?logout" });
+  ResponsePermanentRedirect({ href: "/success?logout" } as ValidUrl);
 
 const app = express();
 
@@ -147,12 +151,13 @@ proxyApp.get("*", (req, res) => {
 });
 proxyApp.listen(8080);
 
+// eslint-disable-next-line @typescript-eslint/explicit-function-return-type
 const doneCb = (ip: string | null, request: string, response: string) => {
-  // tslint:disable-next-line: no-console
+  // eslint-disable-next-line no-console
   console.log("*************** done", ip);
-  // tslint:disable-next-line: no-console
+  // eslint-disable-next-line no-console
   console.log(request);
-  // tslint:disable-next-line: no-console
+  // eslint-disable-next-line no-console
   console.log(response);
 };
 
@@ -200,5 +205,5 @@ pipe(
     withSpidApp.listen(3000);
   })
 )()
-  // tslint:disable-next-line: no-console
+  // eslint-disable-next-line no-console
   .catch(e => console.error("Application error: ", e));
