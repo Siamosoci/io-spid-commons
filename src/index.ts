@@ -64,10 +64,11 @@ export type LogoutT = () => Promise<IResponsePermanentRedirect>;
 
 // invoked for each request / response
 // to pass SAML payload to the caller
-export type DoneCallbackT = (
+export type DoneCallbackT<T extends Record<string, unknown>> = (
   sourceIp: string | null,
   request: string,
-  response: string
+  response: string,
+  extraLoginRequest?: T
 ) => void;
 
 export interface IEventInfo {
@@ -169,7 +170,10 @@ export const withSpidAuthMiddleware =
       >;
 
       const response = await acs(
-        userBaseProps,
+        {
+          ...userBaseProps,
+          getAcsOriginalRequest: () => req,
+        },
         pipe(
           extraRequestParamsCodec,
           E.fromNullable(undefined),
@@ -197,7 +201,7 @@ interface IWithSpidT<
   readonly app: express.Express;
   readonly acs: AssertionConsumerServiceT<T>;
   readonly logout: LogoutT;
-  readonly doneCb?: DoneCallbackT;
+  readonly doneCb?: DoneCallbackT<T>;
   readonly lollipopMiddleware?: ExpressMiddleware;
 }
 
