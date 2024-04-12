@@ -52,6 +52,7 @@ import {
 import { getMetadataTamperer } from "./utils/saml";
 import { isIAcsUser, IAcsUser } from "./utils/user";
 import { IRelayState } from "./utils/samlUtils";
+import { ERROR_SAML_RESPONSE_MISSING } from "./utils/samlUtils";
 
 // assertion consumer service express handler
 export type AssertionConsumerServiceT<T extends Record<string, unknown>> = (
@@ -70,10 +71,11 @@ export type LogoutT = () => Promise<IResponsePermanentRedirect>;
 
 // invoked for each request / response
 // to pass SAML payload to the caller
-export type DoneCallbackT = (
+export type DoneCallbackT<T extends Record<string, unknown>> = (
   sourceIp: string | null,
   request: string,
-  response: string
+  response: string,
+  extraLoginRequest?: T
 ) => void;
 
 export interface IEventInfo {
@@ -137,8 +139,20 @@ export const withSpidAuthMiddleware =
     res: express.Response,
     next: express.NextFunction
   ): void => {
+    const maybeDoc = getXmlFromSamlResponse(req.body);
+    // in case the SAMLResponse is missing
+    // we redirect the user to a specific error
+    if (O.isNone(maybeDoc)) {
+      logger.error(
+        "Spid Authentication|Authentication Error|ERROR=%s|ISSUER=UNKNOWN",
+        ERROR_SAML_RESPONSE_MISSING
+      );
+      return res.redirect(
+        clientErrorRedirectionUrl +
+          `?errorMessage=${ERROR_SAML_RESPONSE_MISSING}`
+      );
+    }
     passport.authenticate("spid", async (err: unknown, user: unknown) => {
-      const maybeDoc = getXmlFromSamlResponse(req.body);
       const issuer = pipe(
         maybeDoc,
         O.chain(getSamlIssuer),
@@ -207,6 +221,19 @@ export const withSpidAuthMiddleware =
       //   )
       // , pipe(maybeRelayState, O.getOrElse(() => ({}))));
 
+      // const response = await acs(
+      //   {
+      //     ...userBaseProps,
+      //     getAcsOriginalRequest: () => req,
+      //   },
+      //   pipe(
+      //     extraRequestParamsCodec,
+      //     E.fromNullable(undefined),
+      //     E.chainW((codec) => codec.decode(extraLoginRequestParams)),
+      //     E.getOrElseW(() => undefined)
+      //   )
+      // );
+
       response.apply(res);
     })(req, res, next);
   };
@@ -226,7 +253,7 @@ interface IWithSpidT<
   readonly app: express.Express;
   readonly acs: AssertionConsumerServiceT<T>;
   readonly logout: LogoutT;
-  readonly doneCb?: DoneCallbackT;
+  readonly doneCb?: DoneCallbackT<T>;
   readonly lollipopMiddleware?: ExpressMiddleware;
 }
 
