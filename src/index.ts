@@ -50,13 +50,13 @@ import {
   getRelayStateFromSamlResponse,
 } from "./utils/saml";
 import { getMetadataTamperer } from "./utils/saml";
-import { isIAcsUser, IAcsUser } from "./utils/user";
+import { isIAcsUserAndExtra, AcsUserAndReq } from "./utils/user";
 import { IRelayState } from "./utils/samlUtils";
 import { ERROR_SAML_RESPONSE_MISSING } from "./utils/samlUtils";
 
 // assertion consumer service express handler
 export type AssertionConsumerServiceT<T extends Record<string, unknown>> = (
-  userPayload: IAcsUser,
+  userPayload: AcsUserAndReq,
   relayState: Partial<IRelayState>,
   extraLoginRequestParams?: T
 ) => Promise<
@@ -188,7 +188,7 @@ export const withSpidAuthMiddleware =
         return res.redirect(redirectionUrl);
       }
 
-      if (!isIAcsUser(user)) {
+      if (!isIAcsUserAndExtra(user)) {
         const [redirectPath, ...redirectQuery] = getClientErrorRedirectionUrl(clientErrorRedirectionUrl).split('?');
         const redirectionUrl =
           redirectPath
@@ -204,35 +204,23 @@ export const withSpidAuthMiddleware =
       }
 
       // TODO: Add support for new extraLoginRequestParams
-      const response = await acs(user, pipe(maybeRelayState, O.getOrElse(() => ({}))));
+      // const response = await acs(user, pipe(maybeRelayState, O.getOrElse(() => ({}))));
 
-      // const { extraLoginRequestParams, ...userBaseProps } = user as Record<
-      //   "extraLoginRequestParams",
-      //   undefined
-      // >;
+      const { extraLoginRequestParams, ...userBaseProps } = user;
 
-      // const response = await acs(
-      //   userBaseProps,
-      //   pipe(
-      //     extraRequestParamsCodec,
-      //     E.fromNullable(undefined),
-      //     E.chainW((codec) => codec.decode(extraLoginRequestParams)),
-      //     E.getOrElseW(() => undefined)
-      //   )
-      // , pipe(maybeRelayState, O.getOrElse(() => ({}))));
-
-      // const response = await acs(
-      //   {
-      //     ...userBaseProps,
-      //     getAcsOriginalRequest: () => req,
-      //   },
-      //   pipe(
-      //     extraRequestParamsCodec,
-      //     E.fromNullable(undefined),
-      //     E.chainW((codec) => codec.decode(extraLoginRequestParams)),
-      //     E.getOrElseW(() => undefined)
-      //   )
-      // );
+      const response = await acs(
+        {
+          ...userBaseProps,
+          getAcsOriginalRequest: () => req,
+        },
+        pipe(maybeRelayState, O.getOrElse(() => ({}))),
+        pipe(
+          extraRequestParamsCodec,
+          E.fromNullable(undefined),
+          E.chainW((codec) => codec.decode(extraLoginRequestParams)),
+          E.getOrElseW(() => undefined)
+        )
+      );
 
       response.apply(res);
     })(req, res, next);
@@ -371,7 +359,6 @@ export const withSpid = <
           // do not encode. it will be encoded later in redirect
           req.query.RelayState = pipe(relayStateObj, JSON.stringify, Buffer.from, b => b.toString('base64')/*, encodeURIComponent*/);
           
-          /*encodeURIComponent*/(Buffer.from(JSON.stringify(relayStateObj)).toString('base64'));
           next();
         },
         middlewareCatchAsInternalError((req, res, next) => {
