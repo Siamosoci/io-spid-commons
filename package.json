@@ -10,7 +10,7 @@
     "startup-idps-metadata": "dist/bin/startup-idps-metadata.js"
   },
   "files": [
-      "./dist"
+    "./dist"
   ],
   "author": "https://pagopa.gov.it",
   "license": "MIT",
