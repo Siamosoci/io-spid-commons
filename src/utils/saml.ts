@@ -578,6 +578,35 @@ export const getPreValidateResponse =
           TE.map(() => _)
         );
 
+        // const responseIssuerValidationStep = (
+        //   _: IIssueInstantWithAuthnContextCR
+        // ): TaskEither<Error, IIssueInstantWithAuthnContextCR> =>
+        //   pipe(
+        //     TE.fromEither(
+        //       pipe(
+        //         validateIssuer(_.Response, _.SAMLRequestCache.idpIssuer),
+        //         E.chainW((Issuer) =>
+        //           pipe(
+        //             E.fromOption(() => "Format missing")(
+        //               O.fromNullable(Issuer.getAttribute("Format"))
+        //             ),
+        //             E.mapLeft(() => E.right(_)),
+        //             E.map((_1) =>
+        //               E.fromPredicate(
+        //                 (FormatValue) =>
+        //                   !FormatValue || FormatValue === ISSUER_FORMAT,
+        //                 () => ISSUER_FORMAT_ERROR
+        //               )(_1)
+        //             ),
+        //             E.map(() => E.right(_)),
+        //             E.toUnion
+        //           )
+        //         )
+        //       )
+        //     ),
+        //     TE.map(() => _)
+        //   );
+
       const responseIssuerValidationStep = (
         _: IIssueInstantWithAuthnContextCR
       ): TaskEither<Error, IIssueInstantWithAuthnContextCR> =>
@@ -585,21 +614,15 @@ export const getPreValidateResponse =
           TE.fromEither(
             pipe(
               validateIssuer(_.Response, _.SAMLRequestCache.idpIssuer),
-              E.chainW((Issuer) =>
+              E.chain((Issuer) =>
                 pipe(
-                  E.fromOption(() => "Format missing")(
-                    O.fromNullable(Issuer.getAttribute("Format"))
-                  ),
-                  E.mapLeft(() => E.right(_)),
-                  E.map((_1) =>
-                    E.fromPredicate(
-                      (FormatValue) =>
-                        !FormatValue || FormatValue === ISSUER_FORMAT,
-                      () => ISSUER_FORMAT_ERROR
-                    )(_1)
+                  Issuer.getAttribute("Format"),
+                  E.fromPredicate(
+                    (FormatValue) =>
+                      !FormatValue || FormatValue === ISSUER_FORMAT,
+                    () => ISSUER_FORMAT_ERROR
                   ),
                   E.map(() => E.right(_)),
-                  E.toUnion
                 )
               )
             )
