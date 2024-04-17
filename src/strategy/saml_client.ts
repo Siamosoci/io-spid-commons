@@ -1,6 +1,8 @@
+import * as t from "io-ts";
 import * as express from "express";
 import { pipe } from "fp-ts/lib/function";
 import * as O from "fp-ts/lib/Option";
+import * as E from "fp-ts/Either";
 import * as TE from "fp-ts/lib/TaskEither";
 import { SamlConfig } from "passport-saml";
 import * as PassportSaml from "passport-saml";
@@ -8,30 +10,32 @@ import { JwkPublicKeyFromToken } from "@pagopa/ts-commons/lib/jwk";
 import {
   LollipopHashAlgorithm,
   LOLLIPOP_PUB_KEY_HASHING_ALGO_HEADER_NAME,
-  LOLLIPOP_PUB_KEY_HEADER_NAME
+  LOLLIPOP_PUB_KEY_HEADER_NAME,
 } from "../types/lollipop";
 import { IExtendedCacheProvider } from "./redis_cache_provider";
 import {
   PreValidateResponseDoneCallbackT,
   PreValidateResponseT,
-  XmlAuthorizeTamperer
+  XmlAuthorizeTamperer,
 } from "./spid";
-import { getRelayStateFromSamlResponse } from "../utils/saml";
-import { readonly } from "io-ts";
 
-export class CustomSamlClient extends PassportSaml.SAML {
+export class CustomSamlClient<
+  T extends Record<string, unknown>
+> extends PassportSaml.SAML {
+  // eslint-disable-next-line max-params
   constructor(
     private readonly config: SamlConfig,
-    private readonly extededCacheProvider: IExtendedCacheProvider,
+    private readonly extededCacheProvider: IExtendedCacheProvider<T>,
+    private readonly requestMapper?: (req: express.Request) => t.Validation<T>,
     private readonly tamperAuthorizeRequest?: XmlAuthorizeTamperer,
-    private readonly preValidateResponse?: PreValidateResponseT,
-    private readonly doneCb?: PreValidateResponseDoneCallbackT
+    private readonly preValidateResponse?: PreValidateResponseT<T>,
+    private readonly doneCb?: PreValidateResponseDoneCallbackT<T>
   ) {
     // validateInResponseTo must be set to false to disable
     // internal cacheProvider of passport-saml
     super({
       ...config,
-      validateInResponseTo: false
+      validateInResponseTo: false,
     });
   }
 
@@ -40,7 +44,7 @@ export class CustomSamlClient extends PassportSaml.SAML {
    * the response XML to satisfy SPID protocol constrains
    */
   public validatePostResponse(
-    body: { readonly SAMLResponse: string, readonly RelayState: string },
+    body: { readonly SAMLResponse: string },
     callback: (err: Error, profile?: unknown, loggedOut?: boolean) => void
   ): void {
     if (this.preValidateResponse) {
@@ -54,33 +58,40 @@ export class CustomSamlClient extends PassportSaml.SAML {
             return callback(err);
           }
           // go on with checks in case no error is found
-          return super.validatePostResponse(body, (error, __, ___) => {
-            const maybeRelayState = getRelayStateFromSamlResponse(body);
-
-            const entityID =
-              pipe(
-                maybeRelayState,
-                O.chainNullableK(r => r.entityID),
-                O.getOrElse(() => "")
-              );
-            
-            //   { entityID: string, rnd: string; } = (() => {
-            //   try {
-            //     return JSON.parse(Buffer.from(decodeURIComponent(body.RelayState), "base64").toString("utf8"));
-            //   } catch {
-            //     return {};
-            //   }
-            // })();
-            
-            if (!error && isValid && AuthnRequestID && !entityID.startsWith('xx_')) {
+          return super.validatePostResponse(body, (error, user, ___) => {
+            // if (!error && isValid && AuthnRequestID && !entityID.startsWith('xx_')) {
+            if (!error && isValid && AuthnRequestID) {
               // eslint-disable-next-line @typescript-eslint/no-floating-promises
               pipe(
-                this.extededCacheProvider.remove(AuthnRequestID),
-                TE.map(_ => callback(error, __, ___)),
+                this.extededCacheProvider.get(AuthnRequestID),
+                TE.map((cachedData) => {
+                  const {
+                    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+                    RequestXML,
+                    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+                    createdAt,
+                    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+                    idpIssuer,
+                    ...extraLoginRequestParams
+                  } = cachedData;
+                  return extraLoginRequestParams;
+                }),
+                TE.chainFirst(() =>
+                  this.extededCacheProvider.remove(AuthnRequestID)
+                ),
+                TE.map((extraLoginRequestParams) =>
+                  callback(
+                    error,
+                    // Do NOT change `extraLoginRequestParams` name, unless you change the one
+                    // used in `withSpidAuthMiddleware` accordingly
+                    user ? { ...user, extraLoginRequestParams } : user,
+                    ___
+                  )
+                ),
                 TE.mapLeft(callback)
               )();
             } else {
-              callback(error, __, ___);
+              callback(error, user, ___);
             }
           });
         }
@@ -101,14 +112,14 @@ export class CustomSamlClient extends PassportSaml.SAML {
   ): void {
     const newCallback = pipe(
       O.fromNullable(this.tamperAuthorizeRequest),
-      O.map(tamperAuthorizeRequest => (e: Error, xml?: string): void => {
+      O.map((tamperAuthorizeRequest) => (e: Error, xml?: string): void => {
         // eslint-disable-next-line @typescript-eslint/no-floating-promises, @typescript-eslint/no-unused-expressions
         xml
           ? pipe(
               req.headers[LOLLIPOP_PUB_KEY_HEADER_NAME],
               JwkPublicKeyFromToken.decode,
               O.fromEither,
-              O.map(pubKey => ({
+              O.map((pubKey) => ({
                 hashAlgorithm: pipe(
                   req.headers[LOLLIPOP_PUB_KEY_HASHING_ALGO_HEADER_NAME],
                   // The headers validation should happen into the Application layer.
@@ -117,16 +128,25 @@ export class CustomSamlClient extends PassportSaml.SAML {
                   O.fromPredicate(LollipopHashAlgorithm.is),
                   O.toUndefined
                 ),
-                pubKey
+                pubKey,
               })),
               O.toUndefined,
-              lollipopParams => tamperAuthorizeRequest(xml, lollipopParams),
-              TE.chain(tamperedXml =>
-                this.extededCacheProvider.save(tamperedXml, this.config)
+              (lollipopParams) => tamperAuthorizeRequest(xml, lollipopParams),
+              TE.chain((tamperedXml) =>
+                this.extededCacheProvider.save(
+                  tamperedXml,
+                  this.config,
+                  pipe(
+                    this.requestMapper,
+                    E.fromNullable(undefined),
+                    E.chainW((mapper) => mapper(req)),
+                    E.getOrElseW(() => undefined)
+                  )
+                )
               ),
-              TE.mapLeft(error => callback(error)),
-              TE.map(cache =>
-                callback((null as unknown) as Error, cache.RequestXML)
+              TE.mapLeft((error) => callback(error)),
+              TE.map((cache) =>
+                callback(null as unknown as Error, cache.RequestXML)
               )
             )()
           : callback(e);

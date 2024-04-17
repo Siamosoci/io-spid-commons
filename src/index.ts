@@ -16,7 +16,7 @@ import {
   IResponseSuccessXml,
   ResponseErrorInternal,
   ResponseErrorValidation,
-  ResponseSuccessXml
+  ResponseSuccessXml,
 } from "@pagopa/ts-commons/lib/responses";
 import * as express from "express";
 import { constVoid, pipe } from "fp-ts/lib/function";
@@ -25,8 +25,9 @@ import * as T from "fp-ts/lib/Task";
 import * as t from "io-ts";
 import * as passport from "passport";
 import { SamlConfig } from "passport-saml";
-import { RedisClient } from "redis";
+import { RedisClientType, RedisClusterType } from "redis";
 import { Builder } from "xml2js";
+import * as E from "fp-ts/Either";
 import { SPID_LEVELS } from "./config";
 import { noopCacheProvider } from "./strategy/redis_cache_provider";
 import { logger } from "./utils/logger";
@@ -36,7 +37,7 @@ import {
   IServiceProviderConfig,
   makeSpidStrategy,
   makeSpidStrategyOptions,
-  upsertSpidStrategyOption
+  upsertSpidStrategyOption,
 } from "./utils/middleware";
 import { middlewareCatchAsInternalError } from "./utils/response";
 import {
@@ -46,16 +47,15 @@ import {
   getSamlIssuer,
   getSamlOptions,
   getXmlFromSamlResponse,
-  getRelayStateFromSamlResponse,
 } from "./utils/saml";
 import { getMetadataTamperer } from "./utils/saml";
-import { isIAcsUser, IAcsUser } from "./utils/user";
-import { IRelayState } from "./utils/samlUtils";
+import { isIAcsUserAndExtra, AcsUserAndReq } from "./utils/user";
+import { ERROR_SAML_RESPONSE_MISSING } from "./utils/samlUtils";
 
 // assertion consumer service express handler
-export type AssertionConsumerServiceT = (
-  userPayload: IAcsUser,
-  relayState: Partial<IRelayState>
+export type AssertionConsumerServiceT<T extends Record<string, unknown>> = (
+  userPayload: AcsUserAndReq,
+  extraLoginRequestParams?: T
 ) => Promise<
   | IResponseErrorInternal
   | IResponseErrorValidation
@@ -68,10 +68,11 @@ export type LogoutT = () => Promise<IResponsePermanentRedirect>;
 
 // invoked for each request / response
 // to pass SAML payload to the caller
-export type DoneCallbackT = (
+export type DoneCallbackT<T extends Record<string, unknown>> = (
   sourceIp: string | null,
   request: string,
-  response: string
+  response: string,
+  extraLoginRequest?: T
 ) => void;
 
 export interface IEventInfo {
@@ -85,8 +86,24 @@ export interface IEventInfo {
 
 export type EventTracker = (params: IEventInfo) => void;
 
+export interface IExtraLoginRequestParamConfig<
+  T extends Record<string, unknown>
+> {
+  // The codec to decode extra params from Redis cache provider
+  readonly codec: t.Type<T>;
+  // Extracts extra params from Login Request, that if valid will be forwarded to the acs controller
+  readonly requestMapper: (req: express.Request) => t.Validation<T>;
+}
+
 // express endpoints configuration
-export interface IApplicationConfig {
+export interface IApplicationConfig<
+  T extends Record<string, unknown> = Record<string, never>,
+  R = T extends Record<string, never>
+    ? undefined
+    : T extends Record<string, unknown>
+    ? IExtraLoginRequestParamConfig<T>
+    : never
+> {
   readonly assertionConsumerServicePath: string;
   readonly clientErrorRedirectionUrl: string;
   readonly clientLoginRedirectionUrl: string;
@@ -97,6 +114,7 @@ export interface IApplicationConfig {
   readonly startupIdpsMetadata?: Record<string, string>;
   readonly eventTraker?: EventTracker;
   readonly hasClockSkewLoggingEvent?: boolean;
+  readonly extraLoginRequestParamConfig?: R;
 }
 
 // re-export
@@ -106,85 +124,111 @@ export { noopCacheProvider, IServiceProviderConfig, SamlConfig };
  * Wraps assertion consumer service handler
  * with SPID authentication and redirects.
  */
-const withSpidAuthMiddleware = (
-  acs: AssertionConsumerServiceT,
-  clientLoginRedirectionUrl: string,
-  clientErrorRedirectionUrl: string
-) => (
-  req: express.Request,
-  res: express.Response,
-  next: express.NextFunction
-): void => {
-  passport.authenticate("spid", async (err, user) => {
+export const withSpidAuthMiddleware =
+  <T extends Record<string, unknown>>(
+    acs: AssertionConsumerServiceT<T>,
+    clientLoginRedirectionUrl: string,
+    clientErrorRedirectionUrl: string,
+    extraRequestParamsCodec?: t.Type<T>
+  ) =>
+  (
+    req: express.Request,
+    res: express.Response,
+    next: express.NextFunction
+  ): void => {
     const maybeDoc = getXmlFromSamlResponse(req.body);
-    const issuer = pipe(
-      maybeDoc,
-      O.chain(getSamlIssuer),
-      O.getOrElse(() => "UNKNOWN")
-    );
-
-    const maybeRelayState = getRelayStateFromSamlResponse(req.body);
-
-    const getClientErrorRedirectionUrl = (defaultUrl: string) =>
-      pipe(
-        maybeRelayState,
-        O.chainNullableK(r => r.redirect_url),
-        O.getOrElse(() => defaultUrl)
+    // in case the SAMLResponse is missing
+    // we redirect the user to a specific error
+    if (O.isNone(maybeDoc)) {
+      logger.error(
+        "Spid Authentication|Authentication Error|ERROR=%s|ISSUER=UNKNOWN",
+        ERROR_SAML_RESPONSE_MISSING
+      );
+      return res.redirect(
+        clientErrorRedirectionUrl +
+          `?errorMessage=${ERROR_SAML_RESPONSE_MISSING}`
+      );
+    }
+    passport.authenticate("spid", async (err: unknown, user: { extraLoginRequestParams?: { redirect_url?: string } }) => {
+      const issuer = pipe(
+        maybeDoc,
+        O.chain(getSamlIssuer),
+        O.getOrElse(() => "UNKNOWN")
       );
 
-    if (err) {
-      const [redirectPath, ...redirectQuery] = getClientErrorRedirectionUrl(clientErrorRedirectionUrl).split('?');
-      const redirectionUrl =
-        redirectPath
-        + (redirectQuery?.length ? `?${redirectQuery.join('&')}&` : '?')
-        + pipe(
-          maybeDoc,
-          O.chain(getErrorCodeFromResponse),
-          O.map(errorCode => `errorCode=${errorCode}`),
-          O.getOrElse(() => `errorMessage=${err}`)
+      const getClientErrorRedirectionUrl = (defaultUrl: string): string =>
+        user?.extraLoginRequestParams?.redirect_url || defaultUrl;
+
+      if (err) {
+        const [redirectPath, ...redirectQuery] = getClientErrorRedirectionUrl(clientErrorRedirectionUrl).split('?');
+        const redirectionUrl =
+          redirectPath
+          + (redirectQuery?.length ? `?${redirectQuery.join('?')}&` : '?') // we join with '?' because we splitted with '?', but redirectQuery should be a 1 element array
+          + pipe(
+            maybeDoc,
+            O.chain(getErrorCodeFromResponse),
+            O.map((errorCode) => `errorCode=${errorCode}`),
+            O.getOrElse(() => `errorMessage=${err}`)
+          );
+        logger.error(
+          "Spid Authentication|Authentication Error|ERROR=%s|ISSUER=%s|REDIRECT_TO=%s",
+          err,
+          issuer,
+          redirectionUrl
         );
-      logger.error(
-        "Spid Authentication|Authentication Error|ERROR=%s|ISSUER=%s|REDIRECT_TO=%s",
-        err,
-        issuer,
-        redirectionUrl
-      );
-      return res.redirect(redirectionUrl);
-    }
+        return res.redirect(redirectionUrl);
+      }
 
-    if (!isIAcsUser(user)) {
-      const [redirectPath, ...redirectQuery] = getClientErrorRedirectionUrl(clientErrorRedirectionUrl).split('?');
-      const redirectionUrl =
-        redirectPath
-        + (redirectQuery?.length ? `?${redirectQuery.join('?')}&` : '?')
-        + 'errorMessage=invalidAcsUser';
+      if (!isIAcsUserAndExtra(user)) {
+        const [redirectPath, ...redirectQuery] = getClientErrorRedirectionUrl(clientErrorRedirectionUrl).split('?');
+        const redirectionUrl =
+          redirectPath
+          + (redirectQuery?.length ? `?${redirectQuery.join('?')}&` : '?') // we join with '?' because we splitted with '?', but redirectQuery should be a 1 element array
+          + 'errorMessage=invalidAcsUser';
 
-      logger.error(
-        "Spid Authentication|Authentication Error|ERROR=user_not_found|ISSUER=%s",
-        issuer
+        logger.error(
+          "Spid Authentication|Authentication Error|ERROR=user_not_found|ISSUER=%s",
+          issuer
+        );
+        // return res.redirect(getClientErrorRedirectionUrl(clientLoginRedirectionUrl));
+        return res.redirect(redirectionUrl);
+      }
+
+      const { extraLoginRequestParams, ...userBaseProps } = user;
+
+      const response = await acs(
+        {
+          ...userBaseProps,
+          getAcsOriginalRequest: () => req,
+        },
+        pipe(
+          extraRequestParamsCodec,
+          E.fromNullable(undefined),
+          E.chainW((codec) => codec.decode(extraLoginRequestParams)),
+          E.getOrElseW(() => undefined)
+        )
       );
-      // return res.redirect(getClientErrorRedirectionUrl(clientLoginRedirectionUrl));
-      return res.redirect(redirectionUrl);
-    }
-    const response = await acs(user, pipe(maybeRelayState, O.getOrElse(() => ({}))));
-    response.apply(res);
-  })(req, res, next);
-};
+
+      response.apply(res);
+    })(req, res, next);
+  };
 
 type ExpressMiddleware = (
   req: express.Request,
   res: express.Response,
   next: express.NextFunction
 ) => void;
-interface IWithSpidT {
-  readonly appConfig: IApplicationConfig;
+interface IWithSpidT<
+  T extends Record<string, unknown> = Record<string, never>
+> {
+  readonly appConfig: IApplicationConfig<T>;
   readonly samlConfig: SamlConfig;
   readonly serviceProviderConfig: IServiceProviderConfig;
-  readonly redisClient: RedisClient;
+  readonly redisClient: RedisClientType | RedisClusterType;
   readonly app: express.Express;
-  readonly acs: AssertionConsumerServiceT;
+  readonly acs: AssertionConsumerServiceT<T>;
   readonly logout: LogoutT;
-  readonly doneCb?: DoneCallbackT;
+  readonly doneCb?: DoneCallbackT<T>;
   readonly lollipopMiddleware?: ExpressMiddleware;
 }
 
@@ -193,7 +237,9 @@ interface IWithSpidT {
  * to an express application.
  */
 // eslint-disable-next-line max-params
-export const withSpid = ({
+export const withSpid = <
+  T extends Record<string, unknown> = Record<string, never>
+>({
   acs,
   app,
   appConfig,
@@ -202,8 +248,8 @@ export const withSpid = ({
   redisClient,
   samlConfig,
   serviceProviderConfig,
-  lollipopMiddleware = (_, __, next): void => next()
-}: IWithSpidT): T.Task<{
+  lollipopMiddleware = (_, __, next): void => next(),
+}: IWithSpidT<T>): T.Task<{
   readonly app: express.Express;
   readonly idpMetadataRefresher: () => T.Task<void>;
 }> => {
@@ -231,7 +277,7 @@ export const withSpid = ({
   return pipe(
     maybeStartupIdpsMetadata,
     O.map(parseStartupIdpsMetadata),
-    O.map(idpOptionsRecord =>
+    O.map((idpOptionsRecord) =>
       T.of(
         makeSpidStrategyOptions(
           samlConfig,
@@ -241,7 +287,7 @@ export const withSpid = ({
       )
     ),
     O.getOrElse(loadSpidStrategyOptions),
-    T.map(spidStrategyOptions => {
+    T.map((spidStrategyOptions) => {
       upsertSpidStrategyOption(app, spidStrategyOptions);
       return makeSpidStrategy(
         spidStrategyOptions,
@@ -254,10 +300,11 @@ export const withSpid = ({
           appConfig.eventTraker,
           appConfig.hasClockSkewLoggingEvent
         ),
-        doneCb
+        doneCb,
+        appConfig.extraLoginRequestParamConfig
       );
     }),
-    T.map(spidStrategy => {
+    T.map((spidStrategy) => {
       // Even when `startupIdpsMetadata` is provided, we try to load
       // IDP metadata from the remote registries
       pipe(
@@ -265,8 +312,8 @@ export const withSpid = ({
         O.map(() => {
           pipe(
             loadSpidStrategyOptions(),
-            T.map(opts => upsertSpidStrategyOption(app, opts))
-          )().catch(e => {
+            T.map((opts) => upsertSpidStrategyOption(app, opts))
+          )().catch((e) => {
             logger.error("loadSpidStrategyOptions|error:%s", e);
           });
         })
@@ -275,40 +322,32 @@ export const withSpid = ({
       const idpMetadataRefresher = (): T.Task<void> =>
         pipe(
           loadSpidStrategyOptions(),
-          T.map(opts => upsertSpidStrategyOption(app, opts))
+          T.map((opts) => upsertSpidStrategyOption(app, opts))
         );
 
       // Initializes SpidStrategy for passport
       passport.use("spid", spidStrategy);
 
       const spidAuth = passport.authenticate("spid", {
-        session: false
+        session: false,
       });
 
       // Setup SPID login handler
       app.get(
         appConfig.loginPath,
         function(req, res, next){
-          // you could redirect to /login?RelayState=whatever, or set query here,
-          const relayStateObj: IRelayState = {
-            entityID: typeof req.query.entityID === 'string' ? req.query.entityID : undefined,
-            rnd: randomBytes(16).toString('base64'),
-            redirect_url: typeof req.query.redirect_url === 'string' ? req.query.redirect_url : undefined
-          };
-
-          // do not encode. it will be encoded later in redirect
-          req.query.RelayState = pipe(relayStateObj, JSON.stringify, Buffer.from, b => b.toString('base64')/*, encodeURIComponent*/);
-          
-          /*encodeURIComponent*/(Buffer.from(JSON.stringify(relayStateObj)).toString('base64'));
+          // required to make spid tests pass, not currently used
+          if (!req.query.RelayState)
+            req.query.RelayState = randomBytes(16).toString('base64');
           next();
         },
         middlewareCatchAsInternalError((req, res, next) => {
           pipe(
             O.fromNullable(req.query),
-            O.chainNullableK(q => q.authLevel),
+            O.chainNullableK((q) => q.authLevel),
             O.filter(t.keyof(SPID_LEVELS).is),
             O.chain(
-              O.fromPredicate(authLevel =>
+              O.fromPredicate((authLevel) =>
                 appConfig.spidLevelsWhitelist.includes(authLevel)
               )
             ),
@@ -322,7 +361,7 @@ export const withSpid = ({
                   "Missing or invalid authLevel"
                 ).apply(res);
               },
-              _ => next()
+              (_) => next()
             )
           );
         }),
@@ -337,7 +376,7 @@ export const withSpid = ({
           async (
             req
           ): Promise<IResponseErrorInternal | IResponseSuccessXml<string>> =>
-            new Promise(resolve =>
+            new Promise((resolve) =>
               spidStrategy.generateServiceProviderMetadataAsync(
                 req,
                 null, // certificate used for encryption / decryption
@@ -369,7 +408,10 @@ export const withSpid = ({
           withSpidAuthMiddleware(
             acs,
             appConfig.clientLoginRedirectionUrl,
-            appConfig.clientErrorRedirectionUrl
+            appConfig.clientErrorRedirectionUrl,
+            appConfig.extraLoginRequestParamConfig?.codec as
+              | t.Type<T>
+              | undefined
           )
         )
       );

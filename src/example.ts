@@ -3,7 +3,7 @@ import { ResponsePermanentRedirect } from "@pagopa/ts-commons/lib/responses";
 import {
   EmailString,
   FiscalCode,
-  NonEmptyString
+  NonEmptyString,
 } from "@pagopa/ts-commons/lib/strings";
 import * as bodyParser from "body-parser";
 import * as express from "express";
@@ -14,18 +14,21 @@ import passport = require("passport");
 import { SamlConfig } from "passport-saml";
 import * as redis from "redis";
 import { ValidUrl } from "@pagopa/ts-commons/lib/url";
+import * as TE from "fp-ts/lib/TaskEither";
+import * as E from "fp-ts/Either";
+import { toError } from "fp-ts/lib/Either";
 import { logger } from "./utils/logger";
 import {
   AggregatorType,
   ContactType,
   EntityType,
-  IServiceProviderConfig
+  IServiceProviderConfig,
 } from "./utils/middleware";
 import {
   AssertionConsumerServiceT,
   IApplicationConfig,
   LogoutT,
-  withSpid
+  withSpid,
 } from ".";
 
 export const SpidUser = t.intersection([
@@ -34,7 +37,7 @@ export const SpidUser = t.intersection([
     // by the calling application:
     // authnContextClassRef -> SpidLevel,
     // issuer -> Issuer
-    getAssertionXml: t.Function
+    getAssertionXml: t.Function,
   }),
   t.partial({
     email: EmailString,
@@ -44,20 +47,27 @@ export const SpidUser = t.intersection([
     name: t.string,
     nameID: t.string,
     nameIDFormat: t.string,
-    sessionIndex: t.string
-  })
+    sessionIndex: t.string,
+  }),
 ]);
 
 export type SpidUser = t.TypeOf<typeof SpidUser>;
 
-const appConfig: IApplicationConfig = {
+export type ExtraParamsT = t.TypeOf<typeof ExtraParams>;
+export const ExtraParams = t.type({ test: t.number });
+
+const appConfig: IApplicationConfig<ExtraParamsT> = {
   assertionConsumerServicePath: "/acs",
   clientErrorRedirectionUrl: "/error",
   clientLoginRedirectionUrl: "/success",
+  extraLoginRequestParamConfig: {
+    codec: ExtraParams,
+    requestMapper: (_req) => E.of({ test: 1 }),
+  },
   loginPath: "/login",
   metadataPath: "/metadata",
   sloPath: "/logout",
-  spidLevelsWhitelist: ["SpidL2", "SpidL3"]
+  spidLevelsWhitelist: ["SpidL2", "SpidL3"],
 };
 
 const serviceProviderConfig: IServiceProviderConfig = {
@@ -66,7 +76,7 @@ const serviceProviderConfig: IServiceProviderConfig = {
   organization: {
     URL: "https://example.com",
     displayName: "Organization display name",
-    name: "Organization name"
+    name: "Organization name",
   },
   publicCert: fs.readFileSync("./certs/cert.pem", "utf-8"),
   requiredAttributes: {
@@ -76,9 +86,9 @@ const serviceProviderConfig: IServiceProviderConfig = {
       "name",
       "familyName",
       "fiscalNumber",
-      "mobilePhone"
+      "mobilePhone",
     ],
-    name: "Required attrs"
+    name: "Required attrs",
   },
   spidCieTestUrl:
     "https://collaudo.idserver.servizicie.interno.gov.it/idp/shibboleth",
@@ -91,7 +101,7 @@ const serviceProviderConfig: IServiceProviderConfig = {
     // eslint-disable-next-line @typescript-eslint/naming-convention
     "http://localhost:8080": true,
     // eslint-disable-next-line @typescript-eslint/naming-convention
-    "https://spid-testenv2:8088": true
+    "https://spid-testenv2:8088": true,
   },
 
   // eslint-disable-next-line sort-keys
@@ -105,15 +115,19 @@ const serviceProviderConfig: IServiceProviderConfig = {
         FiscalCode: "12345678901",
         IPACode: "1",
         VATNumber: "12345678902",
-        aggregatorType: AggregatorType.PublicServicesFullOperator
+        aggregatorType: AggregatorType.PublicServicesFullOperator,
       },
-      phone: "+393331234567"
-    }
-  ]
+      phone: "+393331234567",
+    },
+  ],
 };
 
-const redisClient = redis.createClient({
-  host: "redis"
+const redisClient = redis.createClient<
+  Record<string, never>,
+  Record<string, never>,
+  Record<string, never>
+>({
+  url: "redis://redis",
 });
 
 const samlConfig: SamlConfig = {
@@ -127,11 +141,14 @@ const samlConfig: SamlConfig = {
   issuer: "https://spid.agid.gov.it/cd",
   logoutCallbackUrl: "http://localhost:3000/slo",
   privateCert: fs.readFileSync("./certs/key.pem", "utf-8"),
-  validateInResponseTo: true
+  validateInResponseTo: true,
 };
 
-const acs: AssertionConsumerServiceT = async payload => {
-  logger.info("acs:%s", JSON.stringify(payload));
+const acs: AssertionConsumerServiceT<ExtraParamsT> = async (
+  payload,
+  extraParams
+) => {
+  logger.info("acs:%s%s", JSON.stringify(payload), JSON.stringify(extraParams));
   return ResponsePermanentRedirect({ href: "/success?acs" } as ValidUrl);
 };
 
@@ -152,43 +169,57 @@ proxyApp.get("*", (req, res) => {
 proxyApp.listen(8080);
 
 // eslint-disable-next-line @typescript-eslint/explicit-function-return-type
-const doneCb = (ip: string | null, request: string, response: string) => {
+const doneCb = (
+  ip: string | null,
+  request: string,
+  response: string,
+  extraParams?: ExtraParamsT
+) => {
   // eslint-disable-next-line no-console
   console.log("*************** done", ip);
   // eslint-disable-next-line no-console
   console.log(request);
   // eslint-disable-next-line no-console
   console.log(response);
+  // eslint-disable-next-line no-console
+  console.log(extraParams?.test);
 };
 
 pipe(
-  withSpid({
-    acs,
-    app,
-    appConfig,
-    doneCb,
-    logout,
-    redisClient,
-    samlConfig,
-    serviceProviderConfig
-  }),
+  TE.tryCatch(() => redisClient.connect(), toError),
+  TE.fold(
+    () => T.of(void 0),
+    (_) => T.of(_)
+  ),
+  T.chain(() =>
+    withSpid({
+      acs,
+      app,
+      appConfig,
+      doneCb,
+      logout,
+      redisClient,
+      samlConfig,
+      serviceProviderConfig,
+    })
+  ),
   T.map(({ app: withSpidApp, idpMetadataRefresher }) => {
     withSpidApp.get("/success", (_, res) =>
       res.json({
-        success: "success"
+        success: "success",
       })
     );
     withSpidApp.get("/error", (_, res) =>
       res
         .json({
-          error: "error"
+          error: "error",
         })
         .status(400)
     );
     withSpidApp.get("/refresh", async (_, res) => {
       await idpMetadataRefresher()();
       res.json({
-        metadataUpdate: "completed"
+        metadataUpdate: "completed",
       });
     });
     withSpidApp.use(
@@ -199,11 +230,11 @@ pipe(
         ___: express.NextFunction
       ) =>
         res.status(505).send({
-          error: error.message
+          error: error.message,
         })
     );
     withSpidApp.listen(3000);
   })
 )()
   // eslint-disable-next-line no-console
-  .catch(e => console.error("Application error: ", e));
+  .catch((e) => console.error("Application error: ", e));
