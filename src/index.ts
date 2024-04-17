@@ -47,17 +47,14 @@ import {
   getSamlIssuer,
   getSamlOptions,
   getXmlFromSamlResponse,
-  getRelayStateFromSamlResponse,
 } from "./utils/saml";
 import { getMetadataTamperer } from "./utils/saml";
 import { isIAcsUserAndExtra, AcsUserAndReq } from "./utils/user";
-import { IRelayState } from "./utils/samlUtils";
 import { ERROR_SAML_RESPONSE_MISSING } from "./utils/samlUtils";
 
 // assertion consumer service express handler
 export type AssertionConsumerServiceT<T extends Record<string, unknown>> = (
   userPayload: AcsUserAndReq,
-  relayState: Partial<IRelayState>,
   extraLoginRequestParams?: T
 ) => Promise<
   | IResponseErrorInternal
@@ -152,21 +149,15 @@ export const withSpidAuthMiddleware =
           `?errorMessage=${ERROR_SAML_RESPONSE_MISSING}`
       );
     }
-    passport.authenticate("spid", async (err: unknown, user: unknown) => {
+    passport.authenticate("spid", async (err: unknown, user: { extraLoginRequestParams?: { redirect_url?: string } }) => {
       const issuer = pipe(
         maybeDoc,
         O.chain(getSamlIssuer),
         O.getOrElse(() => "UNKNOWN")
       );
 
-      const maybeRelayState = getRelayStateFromSamlResponse(req.body);
-
-      const getClientErrorRedirectionUrl = (defaultUrl: string) =>
-        pipe(
-          maybeRelayState,
-          O.chainNullableK(r => r.redirect_url),
-          O.getOrElse(() => defaultUrl)
-        );
+      const getClientErrorRedirectionUrl = (defaultUrl: string): string =>
+        user?.extraLoginRequestParams?.redirect_url || defaultUrl;
 
       if (err) {
         const [redirectPath, ...redirectQuery] = getClientErrorRedirectionUrl(clientErrorRedirectionUrl).split('?');
@@ -203,9 +194,6 @@ export const withSpidAuthMiddleware =
         return res.redirect(redirectionUrl);
       }
 
-      // TODO: Add support for new extraLoginRequestParams
-      // const response = await acs(user, pipe(maybeRelayState, O.getOrElse(() => ({}))));
-
       const { extraLoginRequestParams, ...userBaseProps } = user;
 
       const response = await acs(
@@ -213,7 +201,6 @@ export const withSpidAuthMiddleware =
           ...userBaseProps,
           getAcsOriginalRequest: () => req,
         },
-        pipe(maybeRelayState, O.getOrElse(() => ({}))),
         pipe(
           extraRequestParamsCodec,
           E.fromNullable(undefined),
@@ -349,16 +336,9 @@ export const withSpid = <
       app.get(
         appConfig.loginPath,
         function(req, res, next){
-          // you could redirect to /login?RelayState=whatever, or set query here,
-          const relayStateObj: IRelayState = {
-            entityID: typeof req.query.entityID === 'string' ? req.query.entityID : undefined,
-            rnd: randomBytes(16).toString('base64'),
-            redirect_url: typeof req.query.redirect_url === 'string' ? req.query.redirect_url : undefined
-          };
-
-          // do not encode. it will be encoded later in redirect
-          req.query.RelayState = pipe(relayStateObj, JSON.stringify, Buffer.from, b => b.toString('base64')/*, encodeURIComponent*/);
-          
+          // required to make spid tests pass, not currently used
+          if (!req.query.RelayState)
+            req.query.RelayState = randomBytes(16).toString('base64');
           next();
         },
         middlewareCatchAsInternalError((req, res, next) => {

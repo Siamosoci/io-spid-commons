@@ -18,8 +18,6 @@ import {
   PreValidateResponseT,
   XmlAuthorizeTamperer,
 } from "./spid";
-import { getRelayStateFromSamlResponse } from "../utils/saml";
-import { readonly } from "io-ts";
 
 export class CustomSamlClient<
   T extends Record<string, unknown>
@@ -46,7 +44,7 @@ export class CustomSamlClient<
    * the response XML to satisfy SPID protocol constrains
    */
   public validatePostResponse(
-    body: { readonly SAMLResponse: string, readonly RelayState: string },
+    body: { readonly SAMLResponse: string },
     callback: (err: Error, profile?: unknown, loggedOut?: boolean) => void
   ): void {
     if (this.preValidateResponse) {
@@ -61,14 +59,6 @@ export class CustomSamlClient<
           }
           // go on with checks in case no error is found
           return super.validatePostResponse(body, (error, user, ___) => {
-            const maybeRelayState = getRelayStateFromSamlResponse(body);
-
-            const entityID =
-              pipe(
-                maybeRelayState,
-                O.chainNullableK(r => r.entityID),
-                O.getOrElse(() => "")
-              );
             // if (!error && isValid && AuthnRequestID && !entityID.startsWith('xx_')) {
             if (!error && isValid && AuthnRequestID) {
               // eslint-disable-next-line @typescript-eslint/no-floating-promises
