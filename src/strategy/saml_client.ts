@@ -69,8 +69,8 @@ export class CustomSamlClient<
                 O.chainNullableK(r => r.entityID),
                 O.getOrElse(() => "")
               );
-            
-            if (!error && isValid && AuthnRequestID && !entityID.startsWith('xx_')) {
+            // if (!error && isValid && AuthnRequestID && !entityID.startsWith('xx_')) {
+            if (!error && isValid && AuthnRequestID) {
               // eslint-disable-next-line @typescript-eslint/no-floating-promises
               pipe(
                 this.extededCacheProvider.get(AuthnRequestID),
